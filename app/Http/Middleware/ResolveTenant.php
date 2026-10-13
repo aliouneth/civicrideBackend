@@ -42,8 +42,19 @@ class ResolveTenant
         }
 
         // acme.civicride.com → acme. Bare domains / IPs have no tenant subdomain.
+        // Reserved infrastructure subdomains are never tenant slugs — without
+        // this, api.civicride.com resolves slug "api" and header-less login
+        // 404s in production while working on localhost.
         $parts = explode('.', $host);
+        if (count($parts) <= 2) {
+            return null;
+        }
 
-        return count($parts) > 2 ? $parts[0] : null;
+        $subdomain = strtolower($parts[0]);
+        if (in_array($subdomain, ['api', 'www', 'app'], true)) {
+            return null;
+        }
+
+        return $parts[0];
     }
 }

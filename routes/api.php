@@ -23,6 +23,20 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
     Route::post('auth/login', [AuthController::class, 'login']);
         Route::post('auth/session', [AuthController::class, 'session']);
 
+    // Public agency list for the driver-registration dropdown (unauthenticated).
+    Route::get('agencies', function (Illuminate\Http\Request $request) {
+        $search = $request->q ?? '';
+        $query = \App\Models\Tenant::where('is_active', true);
+        if ($search) {
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', '%'.$search.'%')
+                    ->orWhere('slug', 'like', '%'.$search.'%');
+            });
+        }
+        $tenants = $query->orderBy('name')->get(['id', 'name', 'slug']);
+        return response()->json($tenants);
+    });
+
     Route::middleware('auth:sanctum')->group(function () {
         Route::post('auth/logout', [AuthController::class, 'logout']);
         Route::get('auth/me', [AuthController::class, 'me']);
@@ -59,18 +73,6 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
         // Tenant
         Route::get('tenant', [TenantController::class, 'show']);
         Route::patch('tenant/settings', [TenantController::class, 'updateSettings']);
-
-        // Agencies list for driver registration
-        Route::get('agencies', function (Illuminate\Http\Request $request) {
-            $search = $request->q ?? '';
-            $query = \App\Models\Tenant::with('settings');
-            if ($search) {
-                $query->where('name', 'like', '%'.$search.'%')
-                    ->orWhere('slug', 'like', '%'.$search.'%');
-            }
-            $tenants = $query->orderBy('name')->get();
-            return response()->json($tenants);
-        });
 
         // Recurring ride series
         Route::get('ride-series', [RideSeriesController::class, 'index']);

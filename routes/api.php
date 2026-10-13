@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('v1')->middleware(['tenant'])->group(function () {
     Route::post('auth/register', [AuthController::class, 'register']);
     Route::post('auth/login', [AuthController::class, 'login']);
+        Route::post('auth/session', [AuthController::class, 'session']);
 
     Route::middleware('auth:sanctum')->group(function () {
         Route::post('auth/logout', [AuthController::class, 'logout']);
@@ -39,22 +40,35 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
 
         // Drivers
         Route::get('drivers', [DriverController::class, 'index']);
+        Route::get('drivers/report', [DriverController::class, 'report']);
         Route::get('drivers/{driverProfile}', [DriverController::class, 'show']);
         Route::post('drivers', [DriverController::class, 'store']);
         Route::patch('drivers/{driverProfile}', [DriverController::class, 'update']);
         Route::delete('drivers/{driverProfile}', [DriverController::class, 'destroy']);
         Route::get('drivers/me/rides', [DriverController::class, 'myRides']);
+        Route::put('drivers/me', [DriverController::class, 'update']);
         Route::put('drivers/availability', [DriverController::class, 'updateAvailability']);
         Route::put('drivers/me/home', [DriverController::class, 'updateHome']);
         Route::post('drivers/review/{driverProfile}', [DriverController::class, 'review']);
+        Route::post('drivers/me/documents', [DriverController::class, 'uploadDocument']);
+        Route::post('drivers/me/rides/attest', [DriverController::class, 'attestRides']);
+        Route::get('drivers/me/documents/{documentId}', [DriverController::class, 'downloadOwnDocument']);
+        Route::post('drivers/{driverProfile}/documents', [DriverController::class, 'uploadDocument']);
+        Route::get('drivers/{driverProfile}/documents/{documentId}', [DriverController::class, 'downloadUrl']);
 
         // Tenant
         Route::get('tenant', [TenantController::class, 'show']);
         Route::patch('tenant/settings', [TenantController::class, 'updateSettings']);
 
         // Agencies list for driver registration
-        Route::get('agencies', function () {
-            $tenants = \App\Models\Tenant::with('settings')->orderBy('name')->get();
+        Route::get('agencies', function (Illuminate\Http\Request $request) {
+            $search = $request->q ?? '';
+            $query = \App\Models\Tenant::with('settings');
+            if ($search) {
+                $query->where('name', 'like', '%'.$search.'%')
+                    ->orWhere('slug', 'like', '%'.$search.'%');
+            }
+            $tenants = $query->orderBy('name')->get();
             return response()->json($tenants);
         });
 

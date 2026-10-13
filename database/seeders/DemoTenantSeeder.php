@@ -131,7 +131,7 @@ class DemoTenantSeeder extends Seeder
                 'tenant_id' => $tenant->id,
                 'status_id' => $status->id,
                 'requested_by' => $requester->id,
-                'passenger_info' => ['name' => $passenger, 'phone' => $phone, 'passengers' => 1],
+                'passenger_info' => ['name' => $passenger, 'phone' => $phone],
                 'pickup_address' => $pickup,
                 'pickup_lat' => 40.7484 + ($index * 0.001),
                 'pickup_lng' => -73.9857 + ($index * 0.001),
@@ -139,6 +139,9 @@ class DemoTenantSeeder extends Seeder
                 'dropoff_lat' => 40.7527 + ($index * 0.001),
                 'dropoff_lng' => -73.9772 + ($index * 0.001),
                 'scheduled_pickup_at' => now()->addHours($index + 1),
+                // First ride demonstrates a kept-as-one roundtrip in the UI.
+                'trip_type' => $index === 0 ? 'roundtrip' : 'one_way',
+                'return_pickup_at' => $index === 0 ? now()->addHours($index + 4) : null,
                 'actual_pickup_at' => in_array($code, ['picked_up', 'completed'], true) ? now()->subMinutes(10) : null,
                 'actual_dropoff_at' => $code === 'completed' ? now() : null,
                 'priority' => $index % 3,

@@ -40,7 +40,10 @@ class RideController extends Controller
     /**
      * Create a ride. With `recurrence`, expands into a series of concrete rides
      * sharing a series_key so the board, assignment and driver flow need no
-     * special-casing. Responds with the first occurrence plus series_size.
+     * special-casing. A `roundtrip` ride either keeps its return on the one ride
+     * (`return_pickup_at`) or — with `split_return` — gains a linked return leg
+     * with the route swapped. Responds with the first occurrence plus
+     * series_size, and the return leg when one was created.
      */
     public function store(StoreRideRequest $request)
     {
@@ -48,12 +51,17 @@ class RideController extends Controller
         $data = $request->validated();
         unset($data['recurrence']);
 
+        $split = (bool) ($data['split_return'] ?? false);
+        unset($data['split_return']);
+        $data['trip_type'] ??= 'one_way';
+
         $statusId = RideStatus::where('code', 'pending')->firstOrFail()->id;
         $seriesKey = $rule ? $this->recurring->seriesKey() : null;
 
-        // A series is all-or-nothing: a half-written recurring booking would sit
-        // on the board missing its later occurrences, so commit or roll back.
-        [$first, $size] = DB::transaction(function () use ($request, $data, $rule, $statusId, $seriesKey) {
+        // A series (or an outbound + return pair) is all-or-nothing: a
+        // half-written booking would sit on the board missing its other half,
+        // so commit or roll back.
+        [$first, $size, $return] = DB::transaction(function () use ($request, $data, $rule, $statusId, $seriesKey, $split) {
             $base = [
                 ...$data,
                 'status_id' => $statusId,
@@ -65,21 +73,66 @@ class RideController extends Controller
 
             $first = Ride::create([...$base, 'occurrence_index' => $rule ? 0 : null]);
 
+            $pickupAt = CarbonImmutable::parse($data['scheduled_pickup_at']);
             $rest = $rule
-                ? $this->recurring->expand(CarbonImmutable::parse($data['scheduled_pickup_at']), $rule)
+                ? $this->recurring->expand($pickupAt, $rule)
                 : [];
 
+            // A recurring roundtrip keeps one return per occurrence, offset from
+            // its own pickup by the same gap as the first ride.
+            $returnOffset = isset($data['return_pickup_at'])
+                ? CarbonImmutable::parse($data['scheduled_pickup_at'])->diffInSeconds(CarbonImmutable::parse($data['return_pickup_at']), true)
+                : null;
+
             foreach ($rest as $index => $at) {
-                Ride::create([...$base, 'occurrence_index' => $index + 1, 'scheduled_pickup_at' => $at]);
+                Ride::create([
+                    ...$base,
+                    'occurrence_index' => $index + 1,
+                    'scheduled_pickup_at' => $at,
+                    'return_pickup_at' => $returnOffset !== null ? $at->addSeconds($returnOffset)->toDateTimeString() : null,
+                ]);
             }
 
-            return [$first, 1 + count($rest)];
+            $return = $split ? $this->createReturnLeg($first) : null;
+
+            return [$first, 1 + count($rest), $return];
         });
 
         return response()->json([
             ...$first->fresh(['status'])->toArray(),
             'series_size' => $size,
+            'return_ride' => $return?->fresh(['status'])->toArray(),
         ], 201);
+    }
+
+    /**
+     * The return half of a split roundtrip: same booking details, route swapped,
+     * picked up at the outbound's return time. An ordinary one-way ride otherwise.
+     */
+    private function createReturnLeg(Ride $outbound): Ride
+    {
+        // Pull DB defaults (priority 0, currency) onto the model: the in-memory
+        // outbound never had them set, and the return leg copies them verbatim.
+        $outbound->refresh();        $return = Ride::create([
+            'status_id' => $outbound->status_id,
+            'requested_by' => $outbound->requested_by,
+            'passenger_info' => $outbound->passenger_info,
+            'pickup_address' => $outbound->dropoff_address,
+            'pickup_lat' => $outbound->dropoff_lat,
+            'pickup_lng' => $outbound->dropoff_lng,
+            'dropoff_address' => $outbound->pickup_address,
+            'dropoff_lat' => $outbound->pickup_lat,
+            'dropoff_lng' => $outbound->pickup_lng,
+            'scheduled_pickup_at' => $outbound->return_pickup_at,
+            'priority' => $outbound->priority,
+            'notes' => $outbound->notes,
+            'currency' => $outbound->currency,
+            'trip_type' => 'one_way',
+        ]);
+
+        $outbound->update(['return_ride_id' => $return->id]);
+
+        return $return;
     }
 
     public function show(Ride $ride)
@@ -87,6 +140,7 @@ class RideController extends Controller
         // Implicit binding is already tenant-scoped → foreign-tenant ids 404.
         return response()->json($ride->load([
             'status', 'requester', 'assignments.driver.user', 'events.toStatus', 'events.actor',
+            'returnRide.status', 'outboundRide.status',
         ]));
     }
 
@@ -96,6 +150,10 @@ class RideController extends Controller
      * driving them. Status, assignments and series membership are not editable
      * here — they go through the lifecycle/assignment endpoints so audit rows
      * are always written.
+     *
+     * A moved return time moves the linked return leg with it (and vice versa),
+     * so the pair can never disagree. Refused when the linked ride is already
+     * in motion — change one half of a started trip would strand the driver.
      */
     public function update(UpdateRideRequest $request, Ride $ride)
     {
@@ -105,9 +163,53 @@ class RideController extends Controller
             ], 409);
         }
 
-        $ride->fill($request->validated())->save();
+        $data = $request->validated();
+        $returnRide = $ride->returnRide;
+        $outboundRide = $ride->outboundRide;
 
-        return response()->json($ride->fresh(['status', 'activeAssignment']));
+        if (isset($data['return_pickup_at']) && $returnRide !== null
+            && ! $this->isEditable($returnRide)
+            && ! $this->sameInstant($returnRide->scheduled_pickup_at, $data['return_pickup_at'])) {
+            return response()->json([
+                'message' => "The return trip (#{$returnRide->id}) is already {$returnRide->status->code} and keeps its time.",
+            ], 409);
+        }
+
+        if (isset($data['scheduled_pickup_at']) && $outboundRide !== null
+            && ! $this->isEditable($outboundRide)
+            && ! $this->sameInstant($outboundRide->return_pickup_at, $data['scheduled_pickup_at'])) {
+            return response()->json([
+                'message' => "The outbound ride (#{$outboundRide->id}) is already {$outboundRide->status->code} and keeps its return time.",
+            ], 409);
+        }
+
+        DB::transaction(function () use ($ride, $data, $returnRide, $outboundRide) {
+            $ride->fill($data)->save();
+
+            if (isset($data['return_pickup_at']) && $returnRide !== null) {
+                $returnRide->update(['scheduled_pickup_at' => $data['return_pickup_at']]);
+            }
+
+            if (isset($data['scheduled_pickup_at']) && $outboundRide !== null) {
+                $outboundRide->update(['return_pickup_at' => $data['scheduled_pickup_at']]);
+            }
+        });
+
+        return response()->json($ride->fresh(['status', 'activeAssignment', 'returnRide.status']));
+    }
+
+    private function isEditable(Ride $ride): bool
+    {
+        return in_array($ride->status->code, UpdateRideRequest::EDITABLE_STATUSES, true);
+    }
+
+    private function sameInstant(mixed $current, mixed $incoming): bool
+    {
+        if ($current === null || $incoming === null) {
+            return $current === $incoming;
+        }
+
+        return CarbonImmutable::parse($current)->eq(CarbonImmutable::parse($incoming));
     }
 
     /** Execute a lifecycle step (start ride, pickup, drop-off, cancel). */

@@ -33,6 +33,14 @@ class ResolveTenant
 
     private function slugFromHost(string $host): ?string
     {
+        // IP literals (127.0.0.1, ::1, …) have dot-separated parts but no
+        // tenant subdomain — without this guard "127" becomes the slug and
+        // every header-less request (e.g. the login form, which sends no
+        // X-Tenant) 404s with "Unknown or inactive tenant".
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            return null;
+        }
+
         // acme.civicride.com → acme. Bare domains / IPs have no tenant subdomain.
         $parts = explode('.', $host);
 

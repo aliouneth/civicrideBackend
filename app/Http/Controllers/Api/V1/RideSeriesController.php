@@ -158,6 +158,11 @@ class RideSeriesController extends Controller
                 }
 
                 $ride->scheduled_pickup_at = $ride->scheduled_pickup_at->copy()->addDays($days);
+                // A roundtrip occurrence keeps its own return gap: move the
+                // return time by the same shift so the pair stays consistent.
+                if ($ride->return_pickup_at !== null) {
+                    $ride->return_pickup_at = $ride->return_pickup_at->copy()->addDays($days);
+                }
                 $ride->save();
                 $shifted++;
             }

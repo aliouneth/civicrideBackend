@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\UpdateAvailabilityRequest;
 use App\Models\DriverProfile;
 use App\Models\Ride;
+use App\Models\RideAttestation;
 use App\Services\RideAssignmentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -55,18 +56,18 @@ class DriverController extends Controller
     }
 
     /** Document upload (license, insurance, registration). */
-    public function uploadDocument(Request $request)
+    public function uploadDocument(Request $request, ?DriverProfile $driverProfile = null)
     {
         $data = $request->validate([
-            'type' => ['required', 'string', 'in:license,insurance,vehicle_registration,background_check'],
+            'type' => ['required', 'string', 'in:license,insurance,vehicle_registration,background_check,other'],
             'file' => ['required', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:10240'],
         ]);
 
-        $profile = $request->user()->driverProfile()->firstOrFail();
-        $path = $data['file']->store(
-            "tenants/{$profile->tenant_id}/drivers/{$profile->id}", 's3'
+        $profile = $driverProfile ?? $request->user()->driverProfile()->firstOrFail();
+        $path = $data['file']->storeAs(
+            "tenants/{$profile->tenant_id}/drivers/{$profile->id}",
+            $data['file']->hashName()
         );
-
         $document = $profile->documents()->create([
             'type' => $data['type'],
             'file_path' => $path,
@@ -163,13 +164,16 @@ class DriverController extends Controller
     }
 
     /** Update a driver profile. */
-    public function update(Request $request, DriverProfile $driverProfile)
+    public function update(Request $request)
     {
+        $driverProfile = $request->user()->driverProfile()->firstOrFail();
+
         // Schedulers edit the driver record (name/email, contact/vehicle/license,
         // home base) and may flip the onboarding status (e.g. temporary suspend).
         $data = $request->validate([
             'name' => ['sometimes', 'nullable', 'string', 'max:255'],
             'email' => ['sometimes', 'nullable', 'email', 'max:255', 'unique:users,email,'.$driverProfile->user_id],
+            'phone' => ['sometimes', 'nullable', 'string', 'max:32'],
             'home_address' => ['sometimes', 'required', 'string', 'max:255'],
             'home_lat' => ['sometimes', 'required', 'numeric', 'between:-90,90'],
             'home_lng' => ['sometimes', 'required', 'numeric', 'between:-180,180'],
@@ -188,6 +192,7 @@ class DriverController extends Controller
         $userUpdates = array_filter([
             'name' => $data['name'] ?? null,
             'email' => $data['email'] ?? null,
+            'phone' => $data['phone'] ?? null,
         ], fn ($value) => $value !== null);
         if ($userUpdates) {
             $driverProfile->user->update($userUpdates);
@@ -274,13 +279,109 @@ class DriverController extends Controller
         return response()->json($rides);
     }
 
+    /**
+     * Monthly rides report. Drivers always report on themselves; schedulers /
+     * admins pass a driver_profile_id to pick any driver in their agency. The
+     * tenant scope keeps the target and the rides inside the requester's agency.
+     */
+    public function report(Request $request)
+    {
+        $data = $request->validate([
+            'month' => ['required', 'string', 'regex:/^\d{4}-\d{2}$/'],
+            'driver_profile_id' => ['sometimes', 'nullable', 'integer'],
+        ]);
+
+        [$year, $m] = explode('-', $data['month']);
+
+        $user = $request->user();
+        $profile = $user->driverProfile()->exists()
+            ? $user->driverProfile()->with('user')->firstOrFail()
+            : DriverProfile::with('user')->findOrFail((int) ($data['driver_profile_id'] ?? 0));
+
+        $rides = Ride::with(['status', 'activeAssignment.driver'])
+            ->whereHas('assignments', fn ($q) => $q
+                ->where('driver_profile_id', $profile->id)
+                ->whereNull('unassigned_at'))
+            ->whereYear('scheduled_pickup_at', (int) $year)
+            ->whereMonth('scheduled_pickup_at', (int) $m)
+            ->orderBy('scheduled_pickup_at')
+            ->get();
+
+        $completed = $rides->filter(fn (Ride $ride) => $ride->status?->code === 'completed');
+
+        return response()->json([
+            'driver' => ['id' => $profile->id, 'name' => $profile->user->name],
+            'month' => $data['month'],
+            'summary' => [
+                'rides' => $rides->count(),
+                'completed' => $completed->count(),
+                'cancelled' => $rides->filter(fn (Ride $ride) => $ride->status?->code === 'cancelled')->count(),
+                'fare_cents' => $completed->sum('price_cents'),
+                'distance_miles' => round((float) $rides->sum('total_distance_miles'), 1),
+            ],
+            'rides' => $rides,
+        ]);
+    }
+
+    /**
+     * Batch-attest rides from a report. Only completed/cancelled rides are
+     * attestable; others are silently skipped. Idempotent per ride.
+     */
+    public function attestRides(Request $request)
+    {
+        $data = $request->validate([
+            'ride_ids' => ['required', 'array', 'min:1'],
+            'ride_ids.*' => ['required', 'integer'],
+        ]);
+
+        $profile = $request->user()->driverProfile()->firstOrFail();
+
+        $rides = Ride::query()
+            ->whereIn('id', $data['ride_ids'])
+            ->where('tenant_id', $profile->tenant_id)
+            ->whereHas('assignments', fn ($q) => $q
+                ->where('driver_profile_id', $profile->id)
+                ->whereNull('unassigned_at'))
+            ->whereHas('status', fn ($q) => $q->whereIn('code', ['completed', 'cancelled']))
+            ->get();
+
+        $attested = 0;
+        foreach ($rides as $ride) {
+            $created = RideAttestation::firstOrCreate([
+                'ride_id' => $ride->id,
+            ], [
+                'tenant_id' => $profile->tenant_id,
+                'driver_profile_id' => $profile->id,
+                'attested_at' => now(),
+            ]);
+            if ($created->wasRecentlyCreated) {
+                $attested++;
+            }
+        }
+
+        return response()->json([
+            'attested' => $attested,
+            'skipped' => count($data['ride_ids']) - $rides->count(),
+        ]);
+    }
+
     public function downloadUrl(DriverProfile $driverProfile, int $documentId)
     {
         // Schedulers/admins review via short-lived signed URLs — files never proxy through PHP.
         $document = $driverProfile->documents()->findOrFail($documentId);
 
         return response()->json([
-            'url' => Storage::disk('s3')->temporaryUrl($document->file_path, now()->addMinutes(15)),
+            'url' => Storage::disk()->temporaryUrl($document->file_path, now()->addMinutes(15)),
+        ]);
+    }
+
+    public function downloadOwnDocument(Request $request, int $documentId)
+    {
+        $profile = $request->user()->driverProfile()->firstOrFail();
+        $document = $profile->documents()->findOrFail($documentId);
+
+        return response()->json([
+            'url' => Storage::disk()->temporaryUrl($document->file_path, now()->addMinutes(15)),
         ]);
     }
 }

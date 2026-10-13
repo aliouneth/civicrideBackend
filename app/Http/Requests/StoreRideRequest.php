@@ -19,7 +19,8 @@ class StoreRideRequest extends FormRequest
         return [
             'passenger_info.name' => ['required', 'string', 'max:255'],
             'passenger_info.phone' => ['required', 'string', 'max:32'],
-            'passenger_info.passengers' => ['sometimes', 'integer', 'min:1', 'max:30'],
+            'passenger_info.additional_riders' => ['nullable', 'integer', 'min:0', 'max:30'],
+            'passenger_info.destination_phone' => ['nullable', 'string', 'max:32'],
             'passenger_info.wheelchair' => ['sometimes', 'boolean'],
             'passenger_info.child_seat' => ['sometimes', 'boolean'],
             'pickup_address' => ['required', 'string', 'max:500'],
@@ -32,6 +33,12 @@ class StoreRideRequest extends FormRequest
             'priority' => ['sometimes', 'integer', 'min:0', 'max:9'],
             'notes' => ['nullable', 'string', 'max:2000'],
             'price_cents' => ['nullable', 'integer', 'min:0'],
+
+            // Roundtrip: a return time is required; split_return decides whether
+            // the return becomes its own ride (swapped route) or stays on this one.
+            'trip_type' => ['sometimes', 'string', Rule::in(['one_way', 'roundtrip'])],
+            'return_pickup_at' => ['nullable', 'date', 'after:scheduled_pickup_at', 'required_if:trip_type,roundtrip'],
+            'split_return' => ['sometimes', 'boolean'],
 
             // Leaf types only. The all-or-nothing shape of `recurrence` is
             // enforced in after(): required_without on count/until would also
@@ -49,6 +56,18 @@ class StoreRideRequest extends FormRequest
     public function after(): array
     {
         return [function (Validator $validator): void {
+            if ($this->boolean('split_return') && $this->input('trip_type') !== 'roundtrip') {
+                $validator->errors()->add('split_return', 'Only a roundtrip ride can be split into a return trip.');
+            }
+
+            if ($this->boolean('split_return') && is_array($this->input('recurrence')) && $this->input('recurrence') !== []) {
+                $validator->errors()->add('split_return', 'A recurring roundtrip cannot be split yet — create the return as a separate booking.');
+            }
+
+            if ($this->input('trip_type') !== 'roundtrip' && $this->filled('return_pickup_at')) {
+                $validator->errors()->add('return_pickup_at', 'A return time needs a roundtrip ride.');
+            }
+
             $recurrence = $this->input('recurrence');
             if (! is_array($recurrence) || $recurrence === []) {
                 return; // one-off ride — nothing to check

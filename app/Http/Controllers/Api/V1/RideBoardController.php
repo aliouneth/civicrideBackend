@@ -36,6 +36,7 @@ class RideBoardController extends Controller
             'unassigned' => ['nullable', 'boolean'],
             'series_only' => ['nullable', 'boolean'],
             'include_completed' => ['nullable', 'boolean'],
+            'include_distance' => ['nullable', 'boolean'],
             // Explicit date range (inclusive, Y-m-d) — overrides days/past_days
             // for whichever bound is present.
             'start_date' => ['nullable', 'date_format:Y-m-d'],
@@ -52,6 +53,7 @@ class RideBoardController extends Controller
         $unassigned = (bool) ($data['unassigned'] ?? false);
         $seriesOnly = (bool) ($data['series_only'] ?? false);
         $includeCompleted = (bool) ($data['include_completed'] ?? false);
+        $includeDistance = (bool) ($data['include_distance'] ?? true);
         $startDate = $data['start_date'] ?? null;
         $endDate = $data['end_date'] ?? null;
 
@@ -79,13 +81,19 @@ class RideBoardController extends Controller
             ->limit($limit)
             ->get();
 
+        if (! $includeDistance) {
+            $rides->each(function (Ride $ride): void {
+                $ride->computeDistance = false;
+            });
+        }
+
         return response()->json([
             'by' => $by,
             'window_days' => $days,
             'past_days' => $pastDays,
             'total' => $rides->count(),
             'truncated' => $rides->count() >= $limit,
-            'query' => ['q' => $q ?: null, 'unassigned' => $unassigned, 'series_only' => $seriesOnly, 'include_completed' => $includeCompleted],
+            'query' => ['q' => $q ?: null, 'unassigned' => $unassigned, 'series_only' => $seriesOnly, 'include_completed' => $includeCompleted, 'include_distance' => $includeDistance],
             'groups' => $this->group($rides, $by)->values(),
         ]);
     }

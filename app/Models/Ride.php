@@ -35,18 +35,42 @@ class Ride extends Model
     /** Appended so every ride JSON carries it without controller changes. */
     protected $appends = ['total_distance_miles', 'price_cents'];
 
+    /**
+     * Skips the geocode-backed distance computation when false: the board can
+     * request rides without it (serve stored price_cents untouched instead).
+     * Defaults to true so every other caller keeps computing distance.
+     */
+    public bool $computeDistance = true;
+
+    private ?float $totalDistanceMilesMemo = null;
+
+    private bool $totalDistanceMilesMemoized = false;
+
     public function getTotalDistanceMilesAttribute(): ?float
     {
-        return app(\App\Services\RideDistanceService::class)->forRide($this);
+        if (! $this->computeDistance) {
+            return null;
+        }
+
+        // price_cents reads total_distance_miles; memoize so serialization
+        // computes the (expensive, geocode-backed) distance only once per ride.
+        if (! $this->totalDistanceMilesMemoized) {
+            $this->totalDistanceMilesMemo = app(\App\Services\RideDistanceService::class)->forRide($this);
+            $this->totalDistanceMilesMemoized = true;
+        }
+
+        return $this->totalDistanceMilesMemo;
     }
 
     public function getPriceCentsAttribute(): ?int
     {
-        $distance = $this->total_distance_miles;
-        $rate = $this->tenant?->mileage_rate_cents;
+        if ($this->computeDistance) {
+            $distance = $this->total_distance_miles;
+            $rate = $this->tenant?->mileage_rate_cents;
 
-        if ($distance !== null && $rate !== null) {
-            return (int) round($distance * $rate);
+            if ($distance !== null && $rate !== null) {
+                return (int) round($distance * $rate);
+            }
         }
 
         $stored = $this->attributes['price_cents'] ?? null;

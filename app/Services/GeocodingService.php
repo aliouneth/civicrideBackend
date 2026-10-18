@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -9,10 +10,24 @@ use Illuminate\Support\Facades\Http;
  * Provides fallback for US addresses with city/state parsing.
  * PRIMARY: Parses Wisconsin fire-number addresses (E#### / W#### system)
  * which Nominatim cannot handle correctly.
+ *
+ * Results are memoized per request and in the Laravel cache: addresses are
+ * stable, and an unreachable/rate-limited Nominatim must not stall ride
+ * serialization (the distance accessor runs for every ride on the board).
  */
 class GeocodingService
 {
     private const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+
+    /** Successful geocodes are stable; failures are retried after a short TTL. */
+    private const SUCCESS_TTL = 86400 * 30;
+
+    /** The local CA bundle cannot verify Nominatim, so failures are deterministic —
+     *  retrying sooner than this just re-pays the stall on every other request. */
+    private const FAILURE_TTL = 3600;
+
+    /** @var array<string, array{lat: float, lng: float}|null> */
+    private static array $memo = [];
 
     /**
      * Geocode an address to lat/lng.
@@ -24,6 +39,30 @@ class GeocodingService
     {
         if (! $address) return null;
 
+        $key = mb_strtolower(trim($address));
+
+        if (array_key_exists($key, self::$memo)) {
+            return self::$memo[$key];
+        }
+
+        $cacheKey = 'geocode:'.md5($key);
+        if (Cache::has($cacheKey)) {
+            $cached = Cache::get($cacheKey);
+            return self::$memo[$key] = ($cached === false) ? null : $cached;
+        }
+
+        $result = $this->geocodeUncached($address);
+
+        Cache::put($cacheKey, $result ?? false, $result ? self::SUCCESS_TTL : self::FAILURE_TTL);
+
+        return self::$memo[$key] = $result;
+    }
+
+    /**
+     * Geocode without consulting any cache.
+     */
+    private function geocodeUncached(string $address): ?array
+    {
         // Try Wisconsin fire-number parser first (most reliable for WI addresses)
         $fireNumberResult = $this->parseWisconsinFireNumber($address);
         if ($fireNumberResult) {

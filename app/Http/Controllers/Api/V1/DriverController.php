@@ -8,11 +8,15 @@ use App\Models\DriverProfile;
 use App\Models\Ride;
 use App\Models\RideAttestation;
 use App\Services\RideAssignmentService;
+use App\Services\TenantDayRange;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 
 class DriverController extends Controller
 {
+    /** Rides a driver still has to work: assigned, on the way, or on board. */
+    private const OPEN_DRIVER_STATUSES = ['assigned', 'en_route', 'picked_up'];
+
     public function __construct(private RideAssignmentService $assignments) {}
 
     public function index(Request $request)
@@ -283,10 +287,25 @@ class DriverController extends Controller
         return response()->json($assignment, 201);
     }
 
-    /** Driver's own rides: active first, then upcoming. Optional status/month filters back the history view. */
+    /**
+     * Driver's own rides: active first, then upcoming. Optional status/month filters back the history view.
+     *
+     * `scope` narrows the list to the driver's working window: "today" (the
+     * agency's current day, plus any ride still in progress) or "later" (rides
+     * scheduled on a following day). Only rides the driver still has to work
+     * are returned; days that are already over belong to the history view,
+     * not to the driver's job list.
+     */
     public function myRides(Request $request)
     {
+        $data = $request->validate([
+            'scope' => ['nullable', 'in:today,later'],
+        ]);
+
         $profile = $request->user()->driverProfile()->firstOrFail();
+        $scope = $data['scope'] ?? null;
+
+        [$dayStart, $dayEnd] = TenantDayRange::for(app('tenant'))->bounds();
 
         $rides = Ride::with(['status', 'events'])
             ->whereHas('assignments', fn ($q) => $q
@@ -302,10 +321,54 @@ class DriverController extends Controller
                 $q->whereYear('scheduled_pickup_at', (int) $year)
                     ->whereMonth('scheduled_pickup_at', (int) $m);
             })
+            ->when($scope === 'today', fn ($q) => $q->where(function ($q) use ($dayStart, $dayEnd) {
+                $q->where(function ($q) use ($dayStart, $dayEnd) {
+                    $q->where('scheduled_pickup_at', '>=', $dayStart)
+                        ->where('scheduled_pickup_at', '<', $dayEnd);
+                })->whereHas('status', fn ($s) => $s->whereIn('code', self::OPEN_DRIVER_STATUSES))
+                    // A ride still under way belongs on the job list even when it
+                    // was picked up before midnight.
+                    ->orWhereHas('status', fn ($s) => $s->whereIn('code', ['en_route', 'picked_up']));
+            }))
+            ->when($scope === 'later', fn ($q) => $q
+                ->where('scheduled_pickup_at', '>=', $dayEnd)
+                ->whereHas('status', fn ($s) => $s->whereIn('code', self::OPEN_DRIVER_STATUSES)))
             ->orderBy('scheduled_pickup_at', $request->sort === 'desc' ? 'desc' : 'asc')
             ->cursorPaginate(25);
 
         return response()->json($rides);
+    }
+
+    /**
+     * Update driver's notes/incident on an assigned ride without transitioning status.
+     * Drivers can always add context to their active rides.
+     */
+    public function updateRideNotes(Request $request, Ride $ride)
+    {
+        $profile = $request->user()->driverProfile()->firstOrFail();
+
+        // Ensure the driver is assigned to this ride
+        $assigned = $ride->assignments()
+            ->where('driver_profile_id', $profile->id)
+            ->whereNull('unassigned_at')
+            ->exists();
+
+        if (! $assigned) {
+            return response()->json(['message' => 'Not assigned to this ride.'], 403);
+        }
+
+        $data = $request->validate([
+            'note' => ['nullable', 'string', 'max:2000'],
+            'incident' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        // Store in ride's notes column and as metadata on latest event
+        $ride->notes = $data['note'] ?? $ride->notes;
+        $ride->save();
+
+        return response()->json([
+            'notes' => $ride->notes,
+        ]);
     }
 
     /**

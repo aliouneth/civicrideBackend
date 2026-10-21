@@ -85,10 +85,11 @@ class PlatformTenantController extends Controller
             'mileage_rate_cents' => $data['mileage_rate_cents'] ?? null,
         ]);
 
-        if (isset($data['timezone']) || isset($data['currency'])) {
+        if (isset($data['timezone']) || isset($data['currency']) || isset($data['allow_driver_self_assignment'])) {
             $tenant->settings()->update(array_filter([
                 'timezone' => $data['timezone'] ?? null,
                 'currency' => $data['currency'] ?? null,
+                'allow_driver_self_assignment' => $data['allow_driver_self_assignment'] ?? null,
             ], fn ($v) => $v !== null));
         }
 

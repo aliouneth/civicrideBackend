@@ -28,6 +28,7 @@ class UpdateTenantRequest extends FormRequest
             'mileage_rate_cents' => ['sometimes', 'nullable', 'integer', 'min:0'],
             'timezone' => ['sometimes', 'timezone'],
             'currency' => ['sometimes', 'string', 'size:3'],
+            'allow_driver_self_assignment' => ['sometimes', 'boolean'],
             'supervisor.name' => ['sometimes', 'string', 'max:255'],
             'supervisor.email' => ['sometimes', 'email', 'max:255'],
             'supervisor.password' => ['sometimes', 'string', 'min:10', 'confirmed'],

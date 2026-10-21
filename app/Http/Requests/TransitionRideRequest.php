@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Models\CancellationReason;
 use Illuminate\Foundation\Http\FormRequest;
 
 class TransitionRideRequest extends FormRequest
@@ -18,7 +19,22 @@ class TransitionRideRequest extends FormRequest
             'to_code' => ['required', 'string', 'in:assigned,en_route,picked_up,completed,cancelled,pending'],
             'note' => ['nullable', 'string', 'max:2000'],
             'incident' => ['nullable', 'string', 'max:2000'],
-            'reason' => ['nullable', 'string', 'max:500'],
+            'reason' => [
+                'nullable',
+                'string',
+                'max:500',
+                // When cancelling, the reason must be a valid active cancellation reason code
+                function ($attribute, $value, $fail) {
+                    if ($this->to_code === 'cancelled' && $value !== null) {
+                        $exists = CancellationReason::where('code', $value)
+                            ->where('is_active', true)
+                            ->exists();
+                        if (! $exists) {
+                            $fail('The selected cancellation reason is not valid.');
+                        }
+                    }
+                },
+            ],
             'lat' => ['nullable', 'numeric', 'between:-90,90'],
             'lng' => ['nullable', 'numeric', 'between:-180,180'],
         ];

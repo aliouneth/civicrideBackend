@@ -10,6 +10,7 @@ use App\Models\Ride;
 use App\Models\RideStatus;
 use App\Services\RecurringRideService;
 use App\Services\RideTransitionService;
+use App\Services\TenantDayRange;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -21,9 +22,20 @@ class RideController extends Controller
         private RecurringRideService $recurring,
     ) {}
 
-    /** Dispatch board feed: filterable, cursor-paginated, N+1-free. */
+    /**
+     * Dispatch board feed: filterable, cursor-paginated, N+1-free.
+     *
+     * `scope=upcoming` drops the days that are already over, so a driver's list
+     * of claimable rides only holds what can still be driven.
+     */
     public function index(Request $request)
     {
+        $data = $request->validate([
+            'scope' => ['nullable', 'in:upcoming'],
+        ]);
+
+        $dayStart = TenantDayRange::for(app('tenant'))->bounds()[0];
+
         $query = Ride::with(['status', 'activeAssignment.driver.user'])
             ->when($request->status, fn ($q, $code) => $q->whereHas('status', fn ($s) => $s->where('code', $code)))
             ->when($request->driver_profile_id, fn ($q, $id) => $q->whereHas(
@@ -31,6 +43,7 @@ class RideController extends Controller
             ))
             ->when($request->date, fn ($q, $date) => $q->whereDate('scheduled_pickup_at', $date))
             ->when($request->series_key, fn ($q, $key) => $q->where('series_key', $key))
+            ->when(($data['scope'] ?? null) === 'upcoming', fn ($q) => $q->where('scheduled_pickup_at', '>=', $dayStart))
             ->orderBy('scheduled_pickup_at')
             ->orderBy('id');
 
@@ -217,9 +230,21 @@ class RideController extends Controller
     {
         $data = $request->validated();
 
-        // Cancelling is a dispatcher privilege even though drivers execute rides.
-        if (($data['to_code'] ?? null) === 'cancelled' && ! $request->user()->canDo('rides.cancel')) {
-            return response()->json(['message' => 'Only dispatchers can cancel rides.'], 403);
+        // Allow cancellation by dispatchers, or by the driver assigned to this ride.
+        if (($data['to_code'] ?? null) === 'cancelled') {
+            $canCancel = $request->user()->canDo('rides.cancel');
+            if (! $canCancel) {
+                $profile = $request->user()->driverProfile;
+                if ($profile) {
+                    $canCancel = $ride->assignments()
+                        ->where('driver_profile_id', $profile->id)
+                        ->whereNull('unassigned_at')
+                        ->exists();
+                }
+            }
+            if (! $canCancel) {
+                return response()->json(['message' => 'You may only cancel rides assigned to you.'], 403);
+            }
         }
 
         $updated = $this->transitions->transition($ride, $data['to_code'], $request->user(), [

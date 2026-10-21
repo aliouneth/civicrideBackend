@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\DriverController;
 use App\Http\Controllers\Api\V1\MessageController;
+use App\Http\Controllers\Api\V1\PlatformCancellationReasonController;
 use App\Http\Controllers\Api\V1\PlatformTenantController;
 use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\RideAssignmentController;
@@ -66,6 +67,12 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
         Route::post('drivers/review/{driverProfile}', [DriverController::class, 'review']);
         Route::post('drivers/me/documents', [DriverController::class, 'uploadDocument']);
         Route::post('drivers/me/rides/attest', [DriverController::class, 'attestRides']);
+        Route::patch('drivers/me/rides/{ride}/notes', [DriverController::class, 'updateRideNotes']);
+
+        // Cancellation reasons (active list for UI dropdowns)
+        Route::get('cancellation-reasons', function () {
+            return response()->json(\App\Models\CancellationReason::activeList());
+        });
         Route::get('drivers/me/documents/{documentId}', [DriverController::class, 'downloadOwnDocument']);
         Route::post('drivers/{driverProfile}/documents', [DriverController::class, 'uploadDocument']);
         Route::get('drivers/{driverProfile}/documents/{documentId}', [DriverController::class, 'downloadUrl']);
@@ -147,6 +154,9 @@ Route::prefix('v1')->middleware(['auth:sanctum', RequirePlatformAdmin::class])->
 
         return response()->json(['data' => $user->fresh()]);
     });
+
+    // Cancellation reasons — platform-wide reference data.
+    Route::apiResource('platform/cancellation-reasons', PlatformCancellationReasonController::class);
 
     // Cross-agency aggregates for the platform dashboard. No tenant is bound
     // here, so the BelongsToTenant scope is skipped and counts span all tenants.

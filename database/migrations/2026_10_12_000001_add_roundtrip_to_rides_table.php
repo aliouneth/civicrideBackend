@@ -26,15 +26,21 @@ return new class extends Migration
                 ->constrained('rides')->nullOnDelete();
         });
 
-        DB::statement("ALTER TABLE rides ADD CONSTRAINT chk_rides_trip_type CHECK (trip_type IN ('one_way', 'roundtrip'))");
-        DB::statement('ALTER TABLE rides ADD CONSTRAINT chk_rides_return_time CHECK (return_pickup_at IS NULL OR return_pickup_at > scheduled_pickup_at)');
+        // MySQL 8.0.16+ enforces named CHECKs; other drivers (sqlite in the
+        // test suite) have no ALTER TABLE ... ADD CONSTRAINT syntax.
+        if (DB::connection()->getDriverName() === 'mysql') {
+            DB::statement("ALTER TABLE rides ADD CONSTRAINT chk_rides_trip_type CHECK (trip_type IN ('one_way', 'roundtrip'))");
+            DB::statement('ALTER TABLE rides ADD CONSTRAINT chk_rides_return_time CHECK (return_pickup_at IS NULL OR return_pickup_at > scheduled_pickup_at)');
+        }
     }
 
     public function down(): void
     {
         // Named CHECKs outlive their columns unless dropped explicitly.
-        DB::statement('ALTER TABLE rides DROP CHECK chk_rides_return_time');
-        DB::statement('ALTER TABLE rides DROP CHECK chk_rides_trip_type');
+        if (DB::connection()->getDriverName() === 'mysql') {
+            DB::statement('ALTER TABLE rides DROP CHECK chk_rides_return_time');
+            DB::statement('ALTER TABLE rides DROP CHECK chk_rides_trip_type');
+        }
 
         Schema::table('rides', function (Blueprint $table) {
             $table->dropForeign(['return_ride_id']);

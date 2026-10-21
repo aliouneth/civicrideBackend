@@ -60,7 +60,7 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
         Route::patch('drivers/{driverProfile}', [DriverController::class, 'update']);
         Route::delete('drivers/{driverProfile}', [DriverController::class, 'destroy']);
         Route::get('drivers/me/rides', [DriverController::class, 'myRides']);
-        Route::put('drivers/me', [DriverController::class, 'update']);
+        Route::put('drivers/me', [DriverController::class, 'updateMe']);
         Route::put('drivers/availability', [DriverController::class, 'updateAvailability']);
         Route::put('drivers/me/home', [DriverController::class, 'updateHome']);
         Route::post('drivers/review/{driverProfile}', [DriverController::class, 'review']);

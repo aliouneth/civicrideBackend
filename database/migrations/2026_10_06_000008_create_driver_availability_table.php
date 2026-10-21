@@ -28,8 +28,12 @@ return new class extends Migration
             $table->unique(['driver_profile_id', 'weekday', 'start_time']);
         });
 
-        DB::statement('ALTER TABLE driver_availability ADD CONSTRAINT chk_availability_weekday CHECK (weekday BETWEEN 0 AND 6)');
-        DB::statement('ALTER TABLE driver_availability ADD CONSTRAINT chk_availability_window CHECK (end_time > start_time)');
+        // MySQL 8.0.16+ enforces named CHECKs; other drivers (sqlite in the
+        // test suite) have no ALTER TABLE ... ADD CONSTRAINT syntax.
+        if (DB::connection()->getDriverName() === 'mysql') {
+            DB::statement('ALTER TABLE driver_availability ADD CONSTRAINT chk_availability_weekday CHECK (weekday BETWEEN 0 AND 6)');
+            DB::statement('ALTER TABLE driver_availability ADD CONSTRAINT chk_availability_window CHECK (end_time > start_time)');
+        }
     }
 
     public function down(): void

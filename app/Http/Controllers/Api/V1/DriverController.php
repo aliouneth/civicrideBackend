@@ -163,11 +163,9 @@ class DriverController extends Controller
         );
     }
 
-    /** Update a driver profile. */
-    public function update(Request $request)
+    /** Update a driver profile (agency/admin editing any driver in the tenant). */
+    public function update(Request $request, DriverProfile $driverProfile)
     {
-        $driverProfile = $request->user()->driverProfile()->firstOrFail();
-
         // Schedulers edit the driver record (name/email, contact/vehicle/license,
         // home base) and may flip the onboarding status (e.g. temporary suspend).
         $data = $request->validate([
@@ -188,13 +186,46 @@ class DriverController extends Controller
             'onboarding_status' => ['sometimes', 'string', 'in:pending,approved,suspended'],
         ]);
 
+        $this->applyDriverUpdates($driverProfile, $data);
+
+        return response()->json($driverProfile->load(['user', 'availability', 'activeAssignments']));
+    }
+
+    /** Driver edits their own account (PUT /drivers/me). */
+    public function updateMe(Request $request)
+    {
+        $driverProfile = $request->user()->driverProfile()->firstOrFail();
+
+        // Drivers cannot change their own onboarding status or home base here;
+        // those are managed via the dedicated endpoints (updateHome) or review.
+        $data = $request->validate([
+            'name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'email' => ['sometimes', 'nullable', 'email', 'max:255', 'unique:users,email,'.$driverProfile->user_id],
+            'phone' => ['sometimes', 'nullable', 'string', 'max:32'],
+            'vehicle_make' => ['sometimes', 'nullable', 'string', 'max:64'],
+            'vehicle_model' => ['sometimes', 'nullable', 'string', 'max:64'],
+            'vehicle_year' => ['sometimes', 'nullable', 'integer', 'min:2000', 'max:2030'],
+            'vehicle_color' => ['sometimes', 'nullable', 'string', 'max:32'],
+            'vehicle_plate' => ['sometimes', 'nullable', 'string', 'max:16'],
+            'seats' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:30'],
+            'license_number' => ['sometimes', 'nullable', 'string', 'max:64'],
+            'license_expiry' => ['sometimes', 'nullable', 'date'],
+        ]);
+
+        $this->applyDriverUpdates($driverProfile, $data);
+
+        return response()->json($driverProfile->load(['user', 'availability', 'activeAssignments']));
+    }
+
+    private function applyDriverUpdates(DriverProfile $driverProfile, array $data): void
+    {
         // Names/emails live on the linked user account.
         $userUpdates = array_filter([
             'name' => $data['name'] ?? null,
             'email' => $data['email'] ?? null,
             'phone' => $data['phone'] ?? null,
         ], fn ($value) => $value !== null);
-        if ($userUpdates) {
+        if ($userUpdates && $driverProfile->user) {
             $driverProfile->user->update($userUpdates);
         }
 
@@ -229,8 +260,6 @@ class DriverController extends Controller
         }
 
         $driverProfile->save();
-
-        return response()->json($driverProfile->load(['user', 'availability', 'activeAssignments']));
     }
 
     /** Remove a driver profile. */

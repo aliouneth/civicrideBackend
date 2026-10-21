@@ -47,10 +47,14 @@ return new class extends Migration
             $table->index(['tenant_id', 'requested_by']);
         });
 
-        DB::statement('ALTER TABLE rides ADD CONSTRAINT chk_rides_pickup_lat CHECK (pickup_lat BETWEEN -90 AND 90)');
-        DB::statement('ALTER TABLE rides ADD CONSTRAINT chk_rides_pickup_lng CHECK (pickup_lng BETWEEN -180 AND 180)');
-        DB::statement('ALTER TABLE rides ADD CONSTRAINT chk_rides_dropoff_lat CHECK (dropoff_lat BETWEEN -90 AND 90)');
-        DB::statement('ALTER TABLE rides ADD CONSTRAINT chk_rides_dropoff_lng CHECK (dropoff_lng BETWEEN -180 AND 180)');
+        // MySQL 8.0.16+ enforces named CHECKs; other drivers (sqlite in the
+        // test suite) have no ALTER TABLE ... ADD CONSTRAINT syntax.
+        if (DB::connection()->getDriverName() === 'mysql') {
+            DB::statement('ALTER TABLE rides ADD CONSTRAINT chk_rides_pickup_lat CHECK (pickup_lat BETWEEN -90 AND 90)');
+            DB::statement('ALTER TABLE rides ADD CONSTRAINT chk_rides_pickup_lng CHECK (pickup_lng BETWEEN -180 AND 180)');
+            DB::statement('ALTER TABLE rides ADD CONSTRAINT chk_rides_dropoff_lat CHECK (dropoff_lat BETWEEN -90 AND 90)');
+            DB::statement('ALTER TABLE rides ADD CONSTRAINT chk_rides_dropoff_lng CHECK (dropoff_lng BETWEEN -180 AND 180)');
+        }
     }
 
     public function down(): void

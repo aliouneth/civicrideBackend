@@ -22,7 +22,7 @@ class UpdateTenantRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'max:255'],
-            'slug' => ['required', 'string', 'max:64', 'alpha_dash', \Illuminate\Validation\Rule::unique('tenants', 'slug')->ignore($this->route('tenant')?->id)],
+            'slug' => ['required', 'string', 'max:64', 'alpha_dash', 'not_in:platform', \Illuminate\Validation\Rule::unique('tenants', 'slug')->ignore($this->route('tenant')?->id)],
             'contact_email' => ['required', 'email', 'max:255'],
             'phone' => ['nullable', 'string', 'max:32'],
             'mileage_rate_cents' => ['sometimes', 'nullable', 'integer', 'min:0'],

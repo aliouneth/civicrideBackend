@@ -13,7 +13,7 @@ class TenantController extends Controller
     {
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'slug' => ['required', 'string', 'max:64', 'alpha_dash', 'unique:tenants,slug'],
+            'slug' => ['required', 'string', 'max:64', 'alpha_dash', 'not_in:platform', 'unique:tenants,slug'],
             'contact_email' => ['required', 'email'],
             'phone' => ['nullable', 'string', 'max:32'],
             'mileage_rate_cents' => ['sometimes', 'nullable', 'integer', 'min:0'],

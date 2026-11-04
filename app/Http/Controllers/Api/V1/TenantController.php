@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Tenant;
+use App\Services\SecurityAuditLogger;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rules\Password;
 
 class TenantController extends Controller
 {
@@ -21,7 +23,7 @@ class TenantController extends Controller
             'currency' => ['sometimes', 'string', 'size:3'],
             'supervisor.name' => ['required', 'string', 'max:255'],
             'supervisor.email' => ['required', 'email'],
-            'supervisor.password' => ['required', 'string', 'min:10', 'confirmed'],
+            'supervisor.password' => ['required', 'string', Password::min(10)->letters()->numbers(), 'confirmed'],
         ]);
 
         $tenant = Tenant::create([
@@ -39,6 +41,8 @@ class TenantController extends Controller
             'timezone' => $data['timezone'] ?? 'UTC',
             'currency' => $data['currency'] ?? 'USD',
         ]);
+
+        SecurityAuditLogger::record('tenant.created', $request, subject: $tenant, context: ['slug' => $tenant->slug]);
 
         return response()->json(['tenant' => $tenant->fresh('settings'), 'supervisor' => $supervisor], 201);
     }
@@ -62,6 +66,8 @@ class TenantController extends Controller
 
         $settings = app('tenant')->settings;
         $settings->update($data);
+
+        SecurityAuditLogger::record('tenant.settings_updated', $request, actor: $request->user(), subject: app('tenant'), context: ['fields' => array_keys($data)]);
 
         return response()->json($settings->fresh());
     }

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\SecurityAuditLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
@@ -57,6 +58,9 @@ class UserController extends Controller
             $user->driverProfile()->create(['license_number' => 'PENDING']);
         }
 
+        // Audit trail; the temporary password is deliberately NOT recorded.
+        SecurityAuditLogger::record('user.invited', $request, actor: $request->user(), subject: $user, context: ['role' => $data['role']]);
+
         return response()->json([
             'user' => $user->fresh('role'),
             'temporary_password' => $temporaryPassword,
@@ -72,6 +76,8 @@ class UserController extends Controller
         }
 
         $user->update(['is_active' => ! $user->is_active]);
+
+        SecurityAuditLogger::record('user.status_changed', $request, actor: $request->user(), subject: $user, context: ['is_active' => $user->is_active]);
 
         return response()->json($user->fresh('role'));
     }

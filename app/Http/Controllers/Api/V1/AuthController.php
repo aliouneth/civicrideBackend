@@ -5,9 +5,11 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Role;
 use App\Models\User;
+use App\Services\SecurityAuditLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
@@ -26,7 +28,10 @@ class AuthController extends Controller
             'vehicle_year' => ['required', 'integer', 'min:1990', 'max:' . (now()->year + 1)],
             'vehicle_color' => ['required', 'string', 'max:32'],
             'vehicle_plate' => ['required', 'string', 'max:16'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
+            'home_address' => ['nullable', 'string', 'max:255'],
+            'home_lat' => ['nullable', 'numeric', 'between:-90,90'],
+            'home_lng' => ['nullable', 'numeric', 'between:-180,180'],
+            'password' => ['required', 'string', Password::min(10)->letters()->numbers(), 'confirmed'],
             'turnstile_token' => ['required', 'string'],
         ]);
 
@@ -57,9 +62,14 @@ class AuthController extends Controller
             'vehicle_year' => $data['vehicle_year'],
             'vehicle_color' => $data['vehicle_color'],
             'vehicle_plate' => $data['vehicle_plate'],
+            'home_address' => $data['home_address'] ?? null,
+            'home_lat' => $data['home_lat'] ?? null,
+            'home_lng' => $data['home_lng'] ?? null,
         ]);
 
         $user = $user->fresh(['role', 'driverProfile']);
+        SecurityAuditLogger::record('auth.register', $request, actor: $user, subject: $user);
+
         return response()->json([
             'user' => $user,
             'token' => $this->issueToken($user),
@@ -77,6 +87,13 @@ class AuthController extends Controller
         $user = User::where('email', $data['email'])->first();
 
         if (! $user || ! Hash::check($data['password'], $user->password)) {
+            SecurityAuditLogger::record(
+                'auth.login_failed',
+                $request,
+                subject: $user,
+                context: ['email' => $data['email']],
+            );
+
             throw ValidationException::withMessages(['email' => ['Invalid credentials.']]);
         }
 
@@ -99,6 +116,9 @@ class AuthController extends Controller
 
         $user = $user->load(['role', 'tenant', 'driverProfile']);
         $onboardingStatus = $user->driverProfile?->onboarding_status ?? 'applied';
+
+        SecurityAuditLogger::record('auth.login', $request, actor: $user, context: ['tenant' => $tenantSlug]);
+
         return response()->json([
             'user' => $user,
             'token' => $this->issueToken($user),
@@ -117,6 +137,8 @@ class AuthController extends Controller
 
     public function logout(Request $request)
     {
+        SecurityAuditLogger::record('auth.logout', $request, actor: $request->user());
+
         $request->user()->currentAccessToken()->delete();
 
         return response()->json(['message' => 'Logged out.']);

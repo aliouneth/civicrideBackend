@@ -28,6 +28,7 @@ class RolePermissionSeeder extends Seeder
         'messages.send'      => ['supervisor', 'admin', 'scheduler', 'driver'],
         'reports.view'       => ['supervisor', 'admin', 'scheduler'],
         'reports.export'     => ['supervisor', 'admin'],
+        'security.view'      => ['supervisor', 'admin'], // read the security audit trail
     ];
 
     public function run(): void

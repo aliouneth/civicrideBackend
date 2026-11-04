@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Jobs\ExportReportJob;
 use App\Models\ReportExport;
 use App\Models\Ride;
+use App\Services\SecurityAuditLogger;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -80,6 +81,9 @@ class ReportController extends Controller
             'filters' => $data,
             'status' => 'queued',
         ]);
+
+        // Exports move PHI/PII out of the app — record who pulled what.
+        SecurityAuditLogger::record('report.export_requested', $request, actor: $request->user(), subject: $export, context: ['type' => $data['type'], 'format' => $data['format']]);
 
         ExportReportJob::dispatch($export);
 

@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rules\Password;
 
 /**
  * Agency identity — the fields a tenant administrator may correct.
@@ -31,7 +32,7 @@ class UpdateTenantRequest extends FormRequest
             'allow_driver_self_assignment' => ['sometimes', 'boolean'],
             'supervisor.name' => ['sometimes', 'string', 'max:255'],
             'supervisor.email' => ['sometimes', 'email', 'max:255'],
-            'supervisor.password' => ['sometimes', 'string', 'min:10', 'confirmed'],
+            'supervisor.password' => ['sometimes', 'string', Password::min(10)->letters()->numbers(), 'confirmed'],
         ];
     }
 }

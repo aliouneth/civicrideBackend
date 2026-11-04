@@ -10,18 +10,22 @@ use App\Http\Controllers\Api\V1\RideAssignmentController;
 use App\Http\Controllers\Api\V1\RideBoardController;
 use App\Http\Controllers\Api\V1\RideController;
 use App\Http\Controllers\Api\V1\RideSeriesController;
+use App\Http\Controllers\Api\V1\SecurityEventController;
 use App\Http\Controllers\Api\V1\TenantController;
 use App\Http\Controllers\Api\V1\UserController;
 use App\Http\Middleware\RequirePlatformAdmin;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Validation\Rules\Password;
 
 /**
  * Tenant-scoped API. ResolveTenant binds the agency from X-Tenant (or the
  * subdomain); platform admins send X-Tenant: "" and operate on all tenants.
  */
 Route::prefix('v1')->middleware(['tenant'])->group(function () {
-    Route::post('auth/register', [AuthController::class, 'register']);
-    Route::post('auth/login', [AuthController::class, 'login']);
+    // Brute-force protection (HIPAA §164.312(d), SOC 2 CC6.1): per-email and
+    // per-IP limits defined in AppServiceProvider.
+    Route::post('auth/register', [AuthController::class, 'register'])->middleware('throttle:auth');
+    Route::post('auth/login', [AuthController::class, 'login'])->middleware('throttle:login');
         Route::post('auth/session', [AuthController::class, 'session']);
 
     // Public agency list for the driver-registration dropdown (unauthenticated).
@@ -98,6 +102,9 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
         Route::post('users/invite', [UserController::class, 'invite']);
         Route::patch('users/{user}/active', [UserController::class, 'toggleActive']);
 
+        // Security audit trail (read-only; security.view permission)
+        Route::get('security/events', [SecurityEventController::class, 'index']);
+
         // Messaging
         Route::get('messages', [MessageController::class, 'index']);
         Route::post('messages', [MessageController::class, 'store']);
@@ -119,11 +126,14 @@ Route::prefix('v1')->middleware(['auth:sanctum', RequirePlatformAdmin::class])->
         ]);
     });
 
+    // Cross-tenant security audit trail (platform admins bypass permission checks).
+    Route::get('platform/security/events', [SecurityEventController::class, 'index']);
+
     Route::post('platform/users', function (\Illuminate\Http\Request $request) {
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'email', 'max:255', 'unique:users,email'],
-            'password' => ['required', 'string', 'min:10', 'confirmed'],
+            'password' => ['required', 'string', Password::min(10)->letters()->numbers(), 'confirmed'],
         ]);
 
         $tenant = \App\Models\Tenant::first();
@@ -141,6 +151,13 @@ Route::prefix('v1')->middleware(['auth:sanctum', RequirePlatformAdmin::class])->
             'role_id' => $role->id,
         ]);
 
+        \App\Services\SecurityAuditLogger::record(
+            'platform.user_created',
+            $request,
+            actor: $request->user(),
+            subject: $user,
+        );
+
         return response()->json(['data' => $user], 201);
     });
 
@@ -151,6 +168,14 @@ Route::prefix('v1')->middleware(['auth:sanctum', RequirePlatformAdmin::class])->
         }
 
         $user->update(['is_active' => ! $user->is_active]);
+
+        \App\Services\SecurityAuditLogger::record(
+            'platform.user_status_changed',
+            $request,
+            actor: $request->user(),
+            subject: $user,
+            context: ['is_active' => $user->is_active],
+        );
 
         return response()->json(['data' => $user->fresh()]);
     });

@@ -4,9 +4,11 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Tenant;
+use App\Services\SecurityAuditLogger;
 use Illuminate\Http\Request;
 use App\Http\Requests\UpdateTenantRequest;
 use App\Http\Requests\PlatformTenantIndexRequest;
+use Illuminate\Validation\Rules\Password;
 
 class PlatformTenantController extends Controller
 {
@@ -51,7 +53,7 @@ class PlatformTenantController extends Controller
             'currency' => ['sometimes', 'string', 'size:3'],
             'supervisor.name' => ['required', 'string', 'max:255'],
             'supervisor.email' => ['required', 'email'],
-            'supervisor.password' => ['required', 'string', 'min:10', 'confirmed'],
+            'supervisor.password' => ['required', 'string', Password::min(10)->letters()->numbers(), 'confirmed'],
         ]);
 
         $tenant = Tenant::create([
@@ -69,6 +71,8 @@ class PlatformTenantController extends Controller
             'timezone' => $data['timezone'] ?? 'UTC',
             'currency' => $data['currency'] ?? 'USD',
         ]);
+
+        SecurityAuditLogger::record('tenant.created', $request, actor: $request->user(), subject: $tenant, context: ['slug' => $tenant->slug]);
 
         return response()->json(['tenant' => $tenant->fresh('settings'), 'supervisor' => $supervisor], 201);
     }
@@ -108,12 +112,16 @@ class PlatformTenantController extends Controller
             }
         }
 
+        SecurityAuditLogger::record('tenant.updated', $request, actor: $request->user(), subject: $tenant, context: ['fields' => array_keys($data)]);
+
         return response()->json($tenant->fresh(['settings', 'users.role']));
     }
 
-    public function toggleActive(Tenant $tenant)
+    public function toggleActive(Tenant $tenant, Request $request)
     {
         $tenant->update(['is_active' => ! $tenant->is_active]);
+
+        SecurityAuditLogger::record('tenant.status_changed', $request, actor: $request->user(), subject: $tenant, context: ['is_active' => $tenant->is_active]);
 
         return response()->json($tenant->fresh());
     }

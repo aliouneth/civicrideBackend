@@ -106,9 +106,12 @@ class DriverRideScopeTest extends TestCase
     {
         $this->tenant->settings()->update(['timezone' => 'America/Chicago']);
 
-        // 02:00 UTC is still the previous day in Chicago.
-        $lateYesterday = $this->assignRide('assigned', Carbon::now('UTC')->startOfDay()->addHours(2));
-        $today = $this->assignRide('assigned', Carbon::now('UTC')->startOfDay()->addHours(14));
+        // Anchor to Chicago's own clock, not the server's UTC day: 20:00 local
+        // yesterday is the previous day there, 08:00 local is today — true at
+        // any hour the test runs (a UTC-anchored variant only holds while the
+        // UTC date equals the Chicago date, 06:00–24:00 UTC).
+        $lateYesterday = $this->assignRide('assigned', Carbon::now('America/Chicago')->subDay()->setTimeFromTimeString('20:00')->setTimezone('UTC'));
+        $today = $this->assignRide('assigned', Carbon::now('America/Chicago')->setTimeFromTimeString('08:00')->setTimezone('UTC'));
 
         $ids = $this->rideIds($this->getJson('/api/v1/drivers/me/rides?scope=today'));
 

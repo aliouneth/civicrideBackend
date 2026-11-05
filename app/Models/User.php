@@ -12,7 +12,7 @@ class User extends Authenticatable
 
     protected $fillable = [
         'tenant_id', 'role_id', 'name', 'email', 'phone',
-        'password', 'is_platform_admin', 'is_active',
+        'password', 'is_platform_admin', 'is_active', 'must_change_password',
     ];
 
     protected $hidden = ['password', 'remember_token'];
@@ -23,6 +23,7 @@ class User extends Authenticatable
             'password' => 'hashed',
             'is_platform_admin' => 'boolean',
             'is_active' => 'boolean',
+            'must_change_password' => 'boolean',
         ];
     }
 

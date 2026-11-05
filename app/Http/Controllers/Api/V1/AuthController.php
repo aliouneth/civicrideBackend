@@ -124,6 +124,9 @@ class AuthController extends Controller
             'token' => $this->issueToken($user),
             'tenant' => $tenantSlug,
             'onboarding_status' => $onboardingStatus,
+            // True when a platform administrator forced a password reset: the
+            // client must route to /password/change instead of the app home.
+            'must_change_password' => (bool) $user->must_change_password,
         ]);
     }
 
@@ -142,6 +145,37 @@ class AuthController extends Controller
         $request->user()->currentAccessToken()->delete();
 
         return response()->json(['message' => 'Logged out.']);
+    }
+
+    /**
+     * Change the caller's own password. Clears must_change_password, which is
+     * how a forced reset (set by a platform administrator) is completed.
+     * The current password is always required, so a stolen session alone is
+     * not enough to take over the account.
+     */
+    public function changePassword(Request $request)
+    {
+        $data = $request->validate([
+            'current_password' => ['required', 'string'],
+            'password' => ['required', 'string', Password::min(10)->letters()->numbers(), 'confirmed'],
+        ]);
+
+        $user = $request->user();
+
+        if (! Hash::check($data['current_password'], $user->password)) {
+            throw ValidationException::withMessages(['current_password' => ['The current password is incorrect.']]);
+        }
+
+        $wasForced = (bool) $user->must_change_password;
+
+        $user->update([
+            'password' => $data['password'],
+            'must_change_password' => false,
+        ]);
+
+        SecurityAuditLogger::record('auth.password_changed', $request, actor: $user, context: ['forced_reset' => $wasForced]);
+
+        return response()->json(['message' => 'Password updated.']);
     }
 
     public function me(Request $request)

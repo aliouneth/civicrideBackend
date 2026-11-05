@@ -113,8 +113,8 @@ class DriverController extends Controller
     {
         $data = $request->validate([
             'home_address' => ['required', 'string', 'max:255'],
-            'home_lat' => ['required', 'numeric', 'between:-90,90'],
-            'home_lng' => ['required', 'numeric', 'between:-180,180'],
+            'home_lat' => ['nullable', 'numeric', 'between:-90,90'],
+            'home_lng' => ['nullable', 'numeric', 'between:-180,180'],
         ]);
 
         $profile = $request->user()->driverProfile()->firstOrFail();
@@ -128,8 +128,8 @@ class DriverController extends Controller
     {
         $data = $request->validate([
             'home_address' => ['required', 'string', 'max:255'],
-            'home_lat' => ['required', 'numeric', 'between:-90,90'],
-            'home_lng' => ['required', 'numeric', 'between:-180,180'],
+            'home_lat' => ['nullable', 'numeric', 'between:-90,90'],
+            'home_lng' => ['nullable', 'numeric', 'between:-180,180'],
             'onboarding_status' => ['sometimes', 'required', 'string', 'in:pending,approved,suspended'],
         ]);
 
@@ -148,8 +148,8 @@ class DriverController extends Controller
             'tenant_id' => $tenant->id,
             'user_id' => $newUser->id,
             'home_address' => $data['home_address'],
-            'home_lat' => $data['home_lat'],
-            'home_lng' => $data['home_lng'],
+            'home_lat' => $data['home_lat'] ?? null,
+            'home_lng' => $data['home_lng'] ?? null,
             'onboarding_status' => $data['onboarding_status'] ?? 'pending',
             'vehicle_make' => '',
             'vehicle_model' => '',
@@ -177,8 +177,8 @@ class DriverController extends Controller
             'email' => ['sometimes', 'nullable', 'email', 'max:255', 'unique:users,email,'.$driverProfile->user_id],
             'phone' => ['sometimes', 'nullable', 'string', 'max:32'],
             'home_address' => ['sometimes', 'required', 'string', 'max:255'],
-            'home_lat' => ['sometimes', 'required', 'numeric', 'between:-90,90'],
-            'home_lng' => ['sometimes', 'required', 'numeric', 'between:-180,180'],
+            'home_lat' => ['sometimes', 'nullable', 'numeric', 'between:-90,90'],
+            'home_lng' => ['sometimes', 'nullable', 'numeric', 'between:-180,180'],
             'vehicle_make' => ['sometimes', 'nullable', 'string', 'max:64'],
             'vehicle_model' => ['sometimes', 'nullable', 'string', 'max:64'],
             'vehicle_year' => ['sometimes', 'nullable', 'integer', 'min:2000', 'max:2030'],
@@ -375,6 +375,10 @@ class DriverController extends Controller
      * Monthly rides report. Drivers always report on themselves; schedulers /
      * admins pass a driver_profile_id to pick any driver in their agency. The
      * tenant scope keeps the target and the rides inside the requester's agency.
+     *
+     * Every ride carries the attestation the driver signed off for it (if any)
+     * plus an `attested` total in the summary, so agency users can verify a
+     * driver's monthly attestations from the same report.
      */
     public function report(Request $request)
     {
@@ -401,6 +405,13 @@ class DriverController extends Controller
 
         $completed = $rides->filter(fn (Ride $ride) => $ride->status?->code === 'completed');
 
+        // Attestations the driver signed off for this month, keyed by ride so
+        // each trip in the response can show when it was attested.
+        $attestedAt = RideAttestation::query()
+            ->whereIn('ride_id', $rides->pluck('id'))
+            ->get(['ride_id', 'attested_at'])
+            ->keyBy('ride_id');
+
         return response()->json([
             'driver' => ['id' => $profile->id, 'name' => $profile->user->name],
             'month' => $data['month'],
@@ -408,10 +419,13 @@ class DriverController extends Controller
                 'rides' => $rides->count(),
                 'completed' => $completed->count(),
                 'cancelled' => $rides->filter(fn (Ride $ride) => $ride->status?->code === 'cancelled')->count(),
+                'attested' => $rides->filter(fn (Ride $ride) => $attestedAt->has($ride->id))->count(),
                 'fare_cents' => $completed->sum('price_cents'),
                 'distance_miles' => round((float) $rides->sum('total_distance_miles'), 1),
             ],
-            'rides' => $rides,
+            'rides' => $rides->map(fn (Ride $ride) => $ride->toArray() + [
+                'attested_at' => $attestedAt->get($ride->id)?->attested_at?->toISOString(),
+            ])->values(),
         ]);
     }
 

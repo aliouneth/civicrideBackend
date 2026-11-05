@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\V1\RideSeriesController;
 use App\Http\Controllers\Api\V1\SecurityEventController;
 use App\Http\Controllers\Api\V1\TenantController;
 use App\Http\Controllers\Api\V1\UserController;
+use App\Http\Middleware\BlockUntilPasswordChanged;
 use App\Http\Middleware\RequirePlatformAdmin;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Validation\Rules\Password;
@@ -42,9 +43,10 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
         return response()->json($tenants);
     });
 
-    Route::middleware('auth:sanctum')->group(function () {
+    Route::middleware(['auth:sanctum', BlockUntilPasswordChanged::class])->group(function () {
         Route::post('auth/logout', [AuthController::class, 'logout']);
         Route::get('auth/me', [AuthController::class, 'me']);
+        Route::post('auth/change-password', [AuthController::class, 'changePassword']);
 
         // Rides, dispatch board, assignment, lifecycle
         Route::get('rides', [RideController::class, 'index']);
@@ -113,7 +115,7 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
 });
 
 // Platform administration — no tenant resolution, platform admins only.
-Route::prefix('v1')->middleware(['auth:sanctum', RequirePlatformAdmin::class])->group(function () {
+Route::prefix('v1')->middleware(['auth:sanctum', RequirePlatformAdmin::class, BlockUntilPasswordChanged::class])->group(function () {
     Route::get('platform/tenants', [PlatformTenantController::class, 'index']);
     Route::post('platform/tenants', [PlatformTenantController::class, 'store']);
     Route::get('platform/tenants/{tenant}', [PlatformTenantController::class, 'show']);
@@ -175,6 +177,21 @@ Route::prefix('v1')->middleware(['auth:sanctum', RequirePlatformAdmin::class])->
             actor: $request->user(),
             subject: $user,
             context: ['is_active' => $user->is_active],
+        );
+
+        return response()->json(['data' => $user->fresh()]);
+    });
+
+    // Force the user to choose a new password: their next request (this login
+    // session included) is blocked with 423 until auth/change-password runs.
+    Route::patch('platform/users/{user}/force-password-reset', function (\Illuminate\Http\Request $request, \App\Models\User $user) {
+        $user->update(['must_change_password' => true]);
+
+        \App\Services\SecurityAuditLogger::record(
+            'platform.user_password_reset_forced',
+            $request,
+            actor: $request->user(),
+            subject: $user,
         );
 
         return response()->json(['data' => $user->fresh()]);

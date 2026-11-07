@@ -79,6 +79,16 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
         Route::get('cancellation-reasons', function () {
             return response()->json(\App\Models\CancellationReason::activeList());
         });
+
+        // Server-side geocoding (avoids browser CORS / User-Agent restrictions)
+        Route::get('geocode', function (\Illuminate\Http\Request $request) {
+            $address = trim((string) $request->query('q', ''));
+            if ($address === '') {
+                return response()->json(null);
+            }
+            $result = app(\App\Services\GeocodingService::class)->geocode($address);
+            return response()->json($result);
+        });
         Route::get('drivers/me/documents/{documentId}', [DriverController::class, 'downloadOwnDocument']);
         Route::post('drivers/{driverProfile}/documents', [DriverController::class, 'uploadDocument']);
         Route::get('drivers/{driverProfile}/documents/{documentId}', [DriverController::class, 'downloadUrl']);

@@ -119,7 +119,7 @@ class DemoTenantSeeder extends Seeder
             ['pending', 'Morgan Diaz', '+15550102222', '55 Water St', '1 Brooklyn Bridge', null],
             ['assigned', 'Casey Nguyen', '+15550103333', '12 E 34th St', 'JFK Terminal 4', 0],
             ['en_route', 'Riley Patel', '+15550104444', '7 W 57th St', '350 5th Ave', 0],
-            ['picked_up', 'Taylor Kim', '+15550105555', '300 E 42nd St', '475 Park Ave', 1],
+            ['transporting', 'Taylor Kim', '+15550105555', '300 E 42nd St', '475 Park Ave', 1],
             ['completed', 'Avery Stone', '+15550106666', '10 Wall St', 'Pier 11', 2],
             ['cancelled', 'Quinn Baker', '+15550107777', '1 Bryant Park', 'Chelsea Market', null],
         ];
@@ -142,7 +142,7 @@ class DemoTenantSeeder extends Seeder
                 // First ride demonstrates a kept-as-one roundtrip in the UI.
                 'trip_type' => $index === 0 ? 'roundtrip' : 'one_way',
                 'return_pickup_at' => $index === 0 ? now()->addHours($index + 4) : null,
-                'actual_pickup_at' => in_array($code, ['picked_up', 'completed'], true) ? now()->subMinutes(10) : null,
+                'actual_pickup_at' => in_array($code, ['transporting', 'completed'], true) ? now()->subMinutes(10) : null,
                 'actual_dropoff_at' => $code === 'completed' ? now() : null,
                 'priority' => $index % 3,
                 'notes' => $index === 0 ? 'Wheelchair access needed at pickup.' : null,

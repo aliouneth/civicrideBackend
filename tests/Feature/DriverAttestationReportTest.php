@@ -78,7 +78,7 @@ class DriverAttestationReportTest extends TestCase
             'onboarding_status' => 'approved',
         ]);
 
-        foreach (['pending', 'assigned', 'en_route', 'picked_up', 'completed', 'cancelled'] as $index => $code) {
+        foreach (['pending', 'assigned', 'en_route', 'at_pickup', 'transporting', 'completed', 'cancelled'] as $index => $code) {
             $this->statuses[$code] = RideStatus::create([
                 'code' => $code,
                 'label' => ucfirst(str_replace('_', ' ', $code)),

@@ -17,7 +17,7 @@ return new class extends Migration
 
             // Tiny lookup: smallest monotonic PK is correct here (not write-heavy).
             $table->tinyIncrements('id');
-            $table->string('code', 32)->unique(); // pending|assigned|en_route|picked_up|completed|cancelled
+            $table->string('code', 32)->unique(); // pending|assigned|en_route|at_pickup|transporting|completed|cancelled
             $table->string('label', 64);
             $table->unsignedTinyInteger('sort_order');
             $table->boolean('is_terminal')->default(false);

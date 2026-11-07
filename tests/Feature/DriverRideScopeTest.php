@@ -67,7 +67,7 @@ class DriverRideScopeTest extends TestCase
             'onboarding_status' => 'approved',
         ]);
 
-        foreach (['pending', 'assigned', 'en_route', 'picked_up', 'completed', 'cancelled'] as $index => $code) {
+        foreach (['pending', 'assigned', 'en_route', 'at_pickup', 'transporting', 'completed', 'cancelled'] as $index => $code) {
             $this->statuses[$code] = RideStatus::create([
                 'code' => $code,
                 'label' => ucfirst(str_replace('_', ' ', $code)),
@@ -95,7 +95,7 @@ class DriverRideScopeTest extends TestCase
 
     public function test_today_scope_keeps_a_ride_that_is_still_in_progress(): void
     {
-        $startedYesterday = $this->assignRide('picked_up', Carbon::now()->subDay()->setTimeFromTimeString('23:00'));
+        $startedYesterday = $this->assignRide('transporting', Carbon::now()->subDay()->setTimeFromTimeString('23:00'));
 
         $ids = $this->rideIds($this->getJson('/api/v1/drivers/me/rides?scope=today'));
 

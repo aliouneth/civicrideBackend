@@ -119,7 +119,7 @@ class RideAssignmentService
         $conflict = $driver->activeAssignments()
             ->where(function ($query) use ($newRide): void {
                 $query->whereHas('ride', fn ($q) => $q->whereIn('status_id', function ($sub): void {
-                    $sub->select('id')->from('ride_statuses')->whereIn('code', ['en_route', 'picked_up']);
+                    $sub->select('id')->from('ride_statuses')->whereIn('code', ['en_route', 'at_pickup', 'transporting']);
                 }))->orWhereHas('ride', function ($q) use ($newRide): void {
                     $q->whereRaw(
                         'ABS(TIMESTAMPDIFF(MINUTE, scheduled_pickup_at, ?)) < ?',

@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\Storage;
 class DriverController extends Controller
 {
     /** Rides a driver still has to work: assigned, on the way, or on board. */
-    private const OPEN_DRIVER_STATUSES = ['assigned', 'en_route', 'picked_up'];
+    private const OPEN_DRIVER_STATUSES = ['assigned', 'en_route', 'at_pickup', 'transporting'];
 
     public function __construct(private RideAssignmentService $assignments) {}
 
@@ -307,7 +307,7 @@ class DriverController extends Controller
 
         [$dayStart, $dayEnd] = TenantDayRange::for(app('tenant'))->bounds();
 
-        $rides = Ride::with(['status', 'events'])
+        $rides = Ride::with(['status', 'events', 'activeAssignment.driver.user'])
             ->whereHas('assignments', fn ($q) => $q
                 ->where('driver_profile_id', $profile->id)
                 ->whereNull('unassigned_at'))
@@ -328,7 +328,7 @@ class DriverController extends Controller
                 })->whereHas('status', fn ($s) => $s->whereIn('code', self::OPEN_DRIVER_STATUSES))
                     // A ride still under way belongs on the job list even when it
                     // was picked up before midnight.
-                    ->orWhereHas('status', fn ($s) => $s->whereIn('code', ['en_route', 'picked_up']));
+                    ->orWhereHas('status', fn ($s) => $s->whereIn('code', ['en_route', 'at_pickup', 'transporting']));
             }))
             ->when($scope === 'later', fn ($q) => $q
                 ->where('scheduled_pickup_at', '>=', $dayEnd)

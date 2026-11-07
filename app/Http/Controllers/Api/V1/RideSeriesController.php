@@ -21,7 +21,7 @@ class RideSeriesController extends Controller
     public function __construct(private RideTransitionService $transitions) {}
 
     /** Statuses that have not finished yet and can still be changed in bulk. */
-    private const OPEN_CODES = ['pending', 'assigned', 'en_route', 'picked_up'];
+    private const OPEN_CODES = ['pending', 'assigned', 'en_route', 'at_pickup', 'transporting'];
 
     /** Everything a groups list needs, in one grouped query (no N+1). */
     public function index()
@@ -34,8 +34,8 @@ class RideSeriesController extends Controller
             ->selectRaw('COUNT(*) AS occurrences')
             ->selectRaw('MIN(scheduled_pickup_at) AS first_pickup_at')
             ->selectRaw('MAX(scheduled_pickup_at) AS last_pickup_at')
-            ->selectRaw('SUM(CASE WHEN status_id IN (?, ?, ?, ?) THEN 1 ELSE 0 END) AS open_count',
-                [($statusIds['pending']), ($statusIds['assigned']), ($statusIds['en_route']), ($statusIds['picked_up'])])
+            ->selectRaw('SUM(CASE WHEN status_id IN (?, ?, ?, ?, ?) THEN 1 ELSE 0 END) AS open_count',
+                [($statusIds['pending']), ($statusIds['assigned']), ($statusIds['en_route']), ($statusIds['at_pickup']), ($statusIds['transporting'])])
             ->selectRaw('COALESCE(SUM(price_cents), 0) AS total_price_cents')
             ->groupBy('series_key')
             // Aggregate expressions only: under only_full_group_by an ORDER BY on
@@ -151,7 +151,7 @@ class RideSeriesController extends Controller
             $skipped = 0;
 
             foreach ($rides as $ride) {
-                if (in_array($ride->status->code, ['en_route', 'picked_up', 'completed', 'cancelled'], true)) {
+                if (in_array($ride->status->code, ['en_route', 'at_pickup', 'transporting', 'completed', 'cancelled'], true)) {
                     $skipped++;
 
                     continue;

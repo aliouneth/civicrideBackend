@@ -19,8 +19,9 @@ class RideTransitionService
     private const ALLOWED = [
         'pending' => ['assigned', 'cancelled'],
         'assigned' => ['en_route', 'pending', 'cancelled'],
-        'en_route' => ['picked_up', 'cancelled'],
-        'picked_up' => ['completed'],
+        'en_route' => ['at_pickup', 'assigned', 'cancelled'],
+        'at_pickup' => ['transporting', 'en_route', 'cancelled'],
+        'transporting' => ['completed', 'at_pickup'],
         'completed' => [],
         'cancelled' => [],
     ];
@@ -83,7 +84,7 @@ class RideTransitionService
 
     private function stampPhaseTimestamps(Ride $ride, string $toCode): void
     {
-        if ($toCode === 'picked_up' && $ride->actual_pickup_at === null) {
+        if ($toCode === 'transporting' && $ride->actual_pickup_at === null) {
             $ride->actual_pickup_at = now();
         }
         if ($toCode === 'completed' && $ride->actual_dropoff_at === null) {

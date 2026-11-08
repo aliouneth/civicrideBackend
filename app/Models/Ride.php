@@ -14,7 +14,7 @@ class Ride extends Model
         'pickup_address', 'pickup_lat', 'pickup_lng',
         'dropoff_address', 'dropoff_lat', 'dropoff_lng',
         'scheduled_pickup_at', 'actual_pickup_at', 'actual_dropoff_at',
-        'priority', 'notes', 'cancelled_reason', 'price_cents', 'currency',
+        'priority', 'notes', 'cancelled_reason', 'price_cents', 'currency', 'mileage_claimed',
         'series_key', 'series_label', 'occurrence_index', 'recurrence',
         'trip_type', 'return_pickup_at', 'return_ride_id',
     ];
@@ -29,6 +29,7 @@ class Ride extends Model
             'actual_pickup_at' => 'datetime',
             'actual_dropoff_at' => 'datetime',
             'return_pickup_at' => 'datetime',
+            'mileage_claimed' => 'float',
         ];
     }
 

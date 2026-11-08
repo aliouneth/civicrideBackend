@@ -253,6 +253,7 @@ class RideController extends Controller
             'reason' => $data['reason'] ?? null,
             'lat' => $data['lat'] ?? null,
             'lng' => $data['lng'] ?? null,
+            'mileage_claimed' => $data['mileage_claimed'] ?? null,
         ]);
 
         return response()->json($updated);

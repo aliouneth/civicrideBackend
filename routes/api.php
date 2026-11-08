@@ -62,6 +62,7 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
         // Drivers
         Route::get('drivers', [DriverController::class, 'index']);
         Route::get('drivers/report', [DriverController::class, 'report']);
+        Route::get('drivers/attestations', [DriverController::class, 'attestations']);
         Route::get('drivers/{driverProfile}', [DriverController::class, 'show']);
         Route::post('drivers', [DriverController::class, 'store']);
         Route::patch('drivers/{driverProfile}', [DriverController::class, 'update']);

@@ -40,6 +40,9 @@ class RideTransitionService
             $fromStatusId = $locked->status_id;
 
             $locked->status_id = $toStatus->id;
+            if ($toCode === 'completed' && isset($metadata['mileage_claimed'])) {
+                $locked->mileage_claimed = $metadata['mileage_claimed'];
+            }
             $this->stampPhaseTimestamps($locked, $toCode);
             if ($toCode === 'cancelled') {
                 $locked->cancelled_reason = $metadata['reason'] ?? $locked->cancelled_reason;

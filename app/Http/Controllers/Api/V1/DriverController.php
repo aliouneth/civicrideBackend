@@ -420,8 +420,10 @@ class DriverController extends Controller
                 'completed' => $completed->count(),
                 'cancelled' => $rides->filter(fn (Ride $ride) => $ride->status?->code === 'cancelled')->count(),
                 'attested' => $rides->filter(fn (Ride $ride) => $attestedAt->has($ride->id))->count(),
-                'fare_cents' => $completed->sum('price_cents'),
-                'distance_miles' => round((float) $rides->sum('total_distance_miles'), 1),
+            'fare_cents' => $completed->sum('price_cents'),
+            'distance_miles' => round((float) $rides->sum('total_distance_miles'), 1),
+            'mileage_claimed' => round((float) $rides->sum('mileage_claimed'), 1),
+            'mileage_claimed_miles' => round((float) $rides->sum('mileage_claimed'), 1),
             ],
             'rides' => $rides->map(fn (Ride $ride) => $ride->toArray() + [
                 'attested_at' => $attestedAt->get($ride->id)?->attested_at?->toISOString(),
@@ -469,6 +471,55 @@ class DriverController extends Controller
             'attested' => $attested,
             'skipped' => count($data['ride_ids']) - $rides->count(),
         ]);
+    }
+
+    /** Agency view of rides that drivers have attested. */
+    public function attestations(Request $request)
+    {
+        if (! $request->user()->canDo('reports.view') && ! $request->user()->canDo('rides.view')) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $data = $request->validate([
+            'month' => ['sometimes', 'string', 'regex:/^\d{4}-\d{2}$/'],
+            'driver_profile_id' => ['sometimes', 'integer'],
+        ]);
+
+        $query = RideAttestation::with(['ride.status', 'ride.events.toStatus', 'driverProfile.user'])
+            ->where('tenant_id', app('tenant')->id)
+            ->when($data['month'] ?? null, function ($q, string $month): void {
+                [$year, $m] = explode('-', $month);
+                $q->whereYear('attested_at', (int) $year)->whereMonth('attested_at', (int) $m);
+            })
+            ->when($data['driver_profile_id'] ?? null, fn ($q, $id) => $q->where('driver_profile_id', $id))
+            ->orderByDesc('attested_at');
+
+        $rows = $query->get()->map(function (RideAttestation $att) {
+            $events = $att->ride?->events ?? collect();
+            $start = $events->first(fn ($e) => $e->toStatus?->code === 'en_route');
+            $end = $events->first(fn ($e) => $e->toStatus?->code === 'completed');
+            $duration = null;
+            if ($start && $end) {
+                $duration = $start->created_at->diffInMinutes($end->created_at);
+            }
+
+            $ride = $att->ride;
+            if ($ride) {
+                $ride = $ride->toArray();
+                $ride['ride_duration_minutes'] = $duration;
+            }
+
+            return [
+                'id' => $att->id,
+                'attested_at' => $att->attested_at?->toISOString(),
+                'driver' => $att->driverProfile?->user?->name,
+                'driver_profile_id' => $att->driver_profile_id,
+                'ride' => $ride,
+                'ride_duration_minutes' => $duration,
+            ];
+        });
+
+        return response()->json(['data' => $rows]);
     }
 
     public function downloadUrl(DriverProfile $driverProfile, int $documentId)

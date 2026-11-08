@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Services\RecurringRideService;
+use App\Services\TenantDayRange;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -16,6 +17,13 @@ class StoreRideRequest extends FormRequest
 
     public function rules(): array
     {
+        // Dispatch may book a ride for any time on the agency's current day (or
+        // later); only rides from a previous day are rejected. The boundary is
+        // the tenant's local midnight, not the server's `now`, so a same-day
+        // booking is never blocked by the clock.
+        $tenant = app()->bound('tenant') ? app('tenant') : null;
+        $dayStart = TenantDayRange::for($tenant)->bounds()[0]->toDateTimeString();
+
         return [
             'passenger_info.name' => ['required', 'string', 'max:255'],
             'passenger_info.phone' => ['required', 'string', 'max:32'],
@@ -29,7 +37,7 @@ class StoreRideRequest extends FormRequest
             'dropoff_address' => ['required', 'string', 'max:500'],
             'dropoff_lat' => ['required', 'numeric', 'between:-90,90'],
             'dropoff_lng' => ['required', 'numeric', 'between:-180,180'],
-            'scheduled_pickup_at' => ['required', 'date', 'after:now'],
+            'scheduled_pickup_at' => ['required', 'date', 'after_or_equal:'.$dayStart],
             'priority' => ['sometimes', 'integer', 'min:0', 'max:9'],
             'notes' => ['nullable', 'string', 'max:2000'],
             'price_cents' => ['nullable', 'integer', 'min:0'],

@@ -34,7 +34,7 @@ class RideController extends Controller
             'scope' => ['nullable', 'in:upcoming'],
         ]);
 
-        $dayStart = TenantDayRange::for(app('tenant'))->bounds()[0];
+        $dayStart = \Illuminate\Support\Carbon::now('UTC')->startOfDay()->toDateTimeString();
 
         $query = Ride::with(['status', 'activeAssignment.driver.user'])
             ->when($request->status, fn ($q, $code) => $q->whereHas('status', fn ($s) => $s->where('code', $code)))

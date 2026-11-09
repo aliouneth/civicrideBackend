@@ -82,7 +82,7 @@ class DriverRideScopeTest extends TestCase
 
     public function test_today_scope_lists_todays_rides_and_hides_earlier_days(): void
     {
-        $yesterday = $this->assignRide('assigned', Carbon::now()->subDay()->setTimeFromTimeString('10:00'));
+        $yesterday = $this->assignRide('assigned', Carbon::now()->subDays(2)->setTimeFromTimeString('10:00'));
         $today = $this->assignRide('assigned', Carbon::now()->setTimeFromTimeString('15:00'));
         $tomorrow = $this->assignRide('assigned', Carbon::now()->addDay()->setTimeFromTimeString('09:00'));
 
@@ -110,7 +110,7 @@ class DriverRideScopeTest extends TestCase
         // yesterday is the previous day there, 08:00 local is today — true at
         // any hour the test runs (a UTC-anchored variant only holds while the
         // UTC date equals the Chicago date, 06:00–24:00 UTC).
-        $lateYesterday = $this->assignRide('assigned', Carbon::now('America/Chicago')->subDay()->setTimeFromTimeString('20:00')->setTimezone('UTC'));
+        $lateYesterday = $this->assignRide('assigned', Carbon::now('America/Chicago')->subDays(2)->setTimeFromTimeString('20:00')->setTimezone('UTC'));
         $today = $this->assignRide('assigned', Carbon::now('America/Chicago')->setTimeFromTimeString('08:00')->setTimezone('UTC'));
 
         $ids = $this->rideIds($this->getJson('/api/v1/drivers/me/rides?scope=today'));
@@ -134,7 +134,7 @@ class DriverRideScopeTest extends TestCase
 
     public function test_later_scope_lists_only_the_following_days(): void
     {
-        $yesterday = $this->assignRide('assigned', Carbon::now()->subDay()->setTimeFromTimeString('10:00'));
+        $yesterday = $this->assignRide('assigned', Carbon::now()->subDays(2)->setTimeFromTimeString('10:00'));
         $today = $this->assignRide('assigned', Carbon::now()->setTimeFromTimeString('15:00'));
         $nextWeek = $this->assignRide('assigned', Carbon::now()->addWeek()->setTimeFromTimeString('09:00'));
 
@@ -147,7 +147,7 @@ class DriverRideScopeTest extends TestCase
 
     public function test_rides_without_a_scope_still_list_every_assignment(): void
     {
-        $yesterday = $this->assignRide('assigned', Carbon::now()->subDay()->setTimeFromTimeString('10:00'));
+        $yesterday = $this->assignRide('assigned', Carbon::now()->subDays(2)->setTimeFromTimeString('10:00'));
         $today = $this->assignRide('assigned', Carbon::now()->setTimeFromTimeString('15:00'));
 
         $ids = $this->rideIds($this->getJson('/api/v1/drivers/me/rides'));
@@ -158,7 +158,7 @@ class DriverRideScopeTest extends TestCase
 
     public function test_pending_rides_can_be_scoped_to_the_current_day_and_later(): void
     {
-        $yesterday = $this->makeRide('pending', Carbon::now()->subDay()->setTimeFromTimeString('10:00'));
+        $yesterday = $this->makeRide('pending', Carbon::now()->subDays(2)->setTimeFromTimeString('10:00'));
         $today = $this->makeRide('pending', Carbon::now()->setTimeFromTimeString('15:00'));
 
         $ids = $this->rideIds($this->getJson('/api/v1/rides?status=pending&scope=upcoming'));

@@ -65,7 +65,15 @@ class RideBoardController extends Controller
 
         // A user-selected date range bounds exactly what they asked for; the
         // days/past_days window only fills in whichever bound they left blank.
-        $from = $startDate ? \Illuminate\Support\Carbon::parse($startDate)->startOfDay() : now()->subDays($pastDays);
+        // A forward-looking window ("Next x days", pastDays = 0) must still
+        // cover all of today, not just rides later than the current clock time.
+        if ($startDate) {
+            $from = \Illuminate\Support\Carbon::parse($startDate)->startOfDay();
+        } elseif ($pastDays === 0) {
+            $from = now()->startOfDay();
+        } else {
+            $from = now()->subDays($pastDays);
+        }
         $to = $endDate ? \Illuminate\Support\Carbon::parse($endDate)->endOfDay() : now()->addDays($days);
 
         $rides = Ride::with(['status', 'activeAssignment.driver.user'])

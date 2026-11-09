@@ -78,7 +78,13 @@ class RideTransitionService
             return;
         }
 
-        if (! $ride->scheduled_pickup_at->isToday()) {
+        // "Today" follows the agency's timezone, not the server's UTC clock,
+        // and a ride from the previous day may still be started (a driver who
+        // missed the pickup window should not be locked out of their own ride).
+        $timezone = $ride->tenant?->settings?->timezone ?? 'UTC';
+        $timezone = in_array($timezone, timezone_identifiers_list(), true) ? $timezone : 'UTC';
+        $pickup = $ride->scheduled_pickup_at->copy()->setTimezone($timezone);
+        if (! $pickup->isToday() && ! $pickup->isYesterday()) {
             throw ValidationException::withMessages([
                 'to_code' => ['This ride is scheduled for another day and cannot be started today.'],
             ]);

@@ -7,6 +7,7 @@ use App\Models\Notification;
 use App\Models\Ride;
 use App\Models\RideAssignment;
 use App\Models\User;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -19,6 +20,9 @@ class RideAssignmentService
 {
     // Two scheduled pickups closer than this are treated as overlapping work.
     private const OVERLAP_BUFFER_MINUTES = 90;
+
+    // An in-progress ride older than this is stale data, not a trip under way.
+    private const MAX_ACTIVE_RIDE_HOURS = 24;
 
     public function __construct(private RideTransitionService $transitions) {}
 
@@ -113,26 +117,69 @@ class RideAssignmentService
         }
     }
 
-    /** A driver with an in-progress ride, or another pickup inside the buffer, is busy. */
+    /**
+     * A driver is busy when another pickup sits inside the overlap buffer, or
+     * when a trip is still under way and the new pickup starts soon enough that
+     * the driver could still be on it. Long-running in-progress data is ignored,
+     * and the ride itself never conflicts with a re-assignment to the same driver.
+     *
+     * Implemented in PHP (not SQL) so the same logic runs on MySQL in production
+     * and SQLite in the test suite.
+     */
     private function assertNoOverlap(DriverProfile $driver, Ride $newRide): void
     {
-        $conflict = $driver->activeAssignments()
-            ->where(function ($query) use ($newRide): void {
-                $query->whereHas('ride', fn ($q) => $q->whereIn('status_id', function ($sub): void {
-                    $sub->select('id')->from('ride_statuses')->whereIn('code', ['en_route', 'at_pickup', 'transporting']);
-                }))->orWhereHas('ride', function ($q) use ($newRide): void {
-                    $q->whereRaw(
-                        'ABS(TIMESTAMPDIFF(MINUTE, scheduled_pickup_at, ?)) < ?',
-                        [$newRide->scheduled_pickup_at, self::OVERLAP_BUFFER_MINUTES]
-                    );
-                });
-            })
-            ->exists();
+        $now = $this->tenantWallClock($newRide);
+        $startsSoon = $newRide->scheduled_pickup_at->lessThanOrEqualTo(
+            $now->copy()->addMinutes(self::OVERLAP_BUFFER_MINUTES)
+        );
+        $activeSince = $now->copy()->subHours(self::MAX_ACTIVE_RIDE_HOURS);
 
-        if ($conflict) {
-            throw ValidationException::withMessages([
-                'driver' => ['Driver already has an overlapping ride (double-booking prevented).'],
-            ]);
+        $inProgressStatuses = ['en_route', 'at_pickup', 'transporting'];
+
+        foreach ($driver->activeAssignments()->with('ride.status')->get() as $assignment) {
+            if ((int) $assignment->ride_id === (int) $newRide->id) {
+                continue;
+            }
+
+            $ride = $assignment->ride;
+            if ($ride === null) {
+                continue;
+            }
+
+            $status = $ride->status?->code;
+            $isInProgress = in_array($status, $inProgressStatuses, true);
+
+            // Any two pickups closer than the buffer overlap.
+            if (abs($ride->scheduled_pickup_at->diffInMinutes($newRide->scheduled_pickup_at)) < self::OVERLAP_BUFFER_MINUTES) {
+                throw $this->overlapException();
+            }
+
+            // A trip still under way blocks a pickup that starts soon, but only
+            // when the in-progress ride is recent enough to be genuinely ongoing.
+            if ($isInProgress
+                && $ride->scheduled_pickup_at->greaterThanOrEqualTo($activeSince)
+                && $startsSoon) {
+                throw $this->overlapException();
+            }
         }
+    }
+
+    private function overlapException(): ValidationException
+    {
+        return ValidationException::withMessages([
+            'driver' => ['Driver already has an overlapping ride (double-booking prevented).'],
+        ]);
+    }
+
+    /**
+     * The agency's current wall-clock time, expressed the same way
+     * scheduled_pickup_at is stored (local time without an offset).
+     */
+    private function tenantWallClock(Ride $ride): Carbon
+    {
+        $timezone = $ride->tenant?->settings?->timezone ?? 'UTC';
+        $timezone = in_array($timezone, timezone_identifiers_list(), true) ? $timezone : 'UTC';
+
+        return Carbon::parse(Carbon::now($timezone)->toDateTimeString());
     }
 }

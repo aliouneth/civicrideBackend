@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\UserInviteRequest;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\SecurityAuditLogger;
@@ -25,16 +26,9 @@ class UserController extends Controller
      * Invite scheduler/admin/driver: creates the user with a one-time temporary
      * password that is returned to the inviter (no email infrastructure yet).
      */
-    public function invite(Request $request)
+    public function invite(UserInviteRequest $request)
     {
-        abort_if(! $request->user()->canDo('users.invite'), 403);
-
-        $data = $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'email', 'max:255'],
-            'phone' => ['nullable', 'string', 'max:32'],
-            'role' => ['required', 'string', 'in:admin,scheduler,driver'],
-        ]);
+        $data = $request->validated();
 
         $tenant = app('tenant');
         if (User::where('tenant_id', $tenant->id)->where('email', $data['email'])->exists()) {

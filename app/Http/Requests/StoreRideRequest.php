@@ -3,7 +3,6 @@
 namespace App\Http\Requests;
 
 use App\Services\RecurringRideService;
-use App\Services\TenantDayRange;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -17,12 +16,17 @@ class StoreRideRequest extends FormRequest
 
     public function rules(): array
     {
-        // Dispatch may book a ride for any time on the agency's current day (or
-        // later); only rides from a previous day are rejected. The boundary is
-        // the tenant's local midnight, not the server's `now`, so a same-day
-        // booking is never blocked by the clock.
+        // Allow today's date rides even for agencies stored in UTC (or users
+        // behind UTC): a UTC tenant would otherwise treat "tomorrow" as the
+        // earliest bookable day. Non-UTC agencies keep their own midnight
+        // boundary so previous-day rides stay blocked.
         $tenant = app()->bound('tenant') ? app('tenant') : null;
-        $dayStart = TenantDayRange::for($tenant)->bounds()[0]->toDateTimeString();
+        $timezone = $tenant?->settings?->timezone ?? 'UTC';
+        if ($timezone === 'UTC' || ! in_array($timezone, timezone_identifiers_list(), true)) {
+            $dayStart = \Illuminate\Support\Carbon::now('UTC')->subDay()->startOfDay()->toDateTimeString();
+        } else {
+            $dayStart = \Illuminate\Support\Carbon::now($timezone)->startOfDay()->toDateTimeString();
+        }
 
         return [
             'passenger_info.name' => ['required', 'string', 'max:255'],

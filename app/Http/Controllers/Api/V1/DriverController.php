@@ -323,7 +323,10 @@ class DriverController extends Controller
             })
             ->when($scope === 'today', fn ($q) => $q->where(function ($q) use ($dayStart, $dayEnd) {
                 $q->where(function ($q) use ($dayStart, $dayEnd) {
-                    $q->where('scheduled_pickup_at', '>=', $dayStart)
+                    // Include the previous day too: a ride stored just before
+                    // midnight (or in a behind-UTC timezone) must not fall out of
+                    // the driver's job list.
+                    $q->where('scheduled_pickup_at', '>=', $dayStart->copy()->subDay())
                         ->where('scheduled_pickup_at', '<', $dayEnd);
                 })->whereHas('status', fn ($s) => $s->whereIn('code', self::OPEN_DRIVER_STATUSES))
                     // A ride still under way belongs on the job list even when it

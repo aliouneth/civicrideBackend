@@ -3,8 +3,10 @@
 namespace App\Http\Requests;
 
 use App\Services\RecurringRideService;
+use App\Support\UserTimezone;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Carbon;
 use Illuminate\Validation\Rule;
 
 class StoreRideRequest extends FormRequest
@@ -14,19 +16,33 @@ class StoreRideRequest extends FormRequest
         return $this->user()->canDo('rides.create');
     }
 
+    /**
+     * A datetime-local value is the requester's wall clock: convert it to the
+     * UTC instant every ride is stored as. Explicit offsets pass through.
+     */
+    protected function prepareForValidation(): void
+    {
+        $timezone = UserTimezone::fromRequest($this);
+        $normalized = [];
+
+        foreach (['scheduled_pickup_at', 'return_pickup_at'] as $field) {
+            if ($this->filled($field)) {
+                $normalized[$field] = UserTimezone::toUtc($this->input($field), $timezone);
+            }
+        }
+
+        if ($normalized !== []) {
+            $this->merge($normalized);
+        }
+    }
+
     public function rules(): array
     {
-        // Allow today's date rides even for agencies stored in UTC (or users
-        // behind UTC): a UTC tenant would otherwise treat "tomorrow" as the
-        // earliest bookable day. Non-UTC agencies keep their own midnight
-        // boundary so previous-day rides stay blocked.
-        $tenant = app()->bound('tenant') ? app('tenant') : null;
-        $timezone = $tenant?->settings?->timezone ?? 'UTC';
-        if ($timezone === 'UTC' || ! in_array($timezone, timezone_identifiers_list(), true)) {
-            $dayStart = \Illuminate\Support\Carbon::now('UTC')->subDay()->startOfDay()->toDateTimeString();
-        } else {
-            $dayStart = \Illuminate\Support\Carbon::now($timezone)->startOfDay()->toDateTimeString();
-        }
+        // The earliest bookable pickup is today's midnight on the requester's
+        // clock, converted to UTC for comparison against stored instants.
+        $timezone = UserTimezone::fromRequest($this);
+        [$dayStart] = UserTimezone::dayBounds($timezone);
+        $dayStart = $dayStart->toDateTimeString();
 
         return [
             'passenger_info.name' => ['required', 'string', 'max:255'],
@@ -60,7 +76,9 @@ class StoreRideRequest extends FormRequest
             'recurrence.frequency' => ['nullable', Rule::in(['daily', 'weekly', 'monthly'])],
             'recurrence.interval' => ['nullable', 'integer', 'min:1', 'max:12'],
             'recurrence.count' => ['nullable', 'integer', 'min:2', 'max:'.RecurringRideService::MAX_OCCURRENCES],
-            'recurrence.until' => ['nullable', 'date', 'after_or_equal:scheduled_pickup_at'],
+            // The end date is a calendar date in the requester's zone; the
+            // relation to the first pickup is checked in after() below.
+            'recurrence.until' => ['nullable', 'date'],
         ];
     }
 
@@ -95,6 +113,18 @@ class StoreRideRequest extends FormRequest
             }
             if (empty($recurrence['count']) && empty($recurrence['until'])) {
                 $validator->errors()->add('recurrence.count', 'Give the series a number of rides or an end date.');
+            }
+
+            // Compare calendar dates on the requester's clock: an 8pm pickup
+            // is still on the same local day as an "until" of that day.
+            if (! empty($recurrence['until']) && $this->filled('scheduled_pickup_at')) {
+                $zone = UserTimezone::fromRequest($this);
+                $firstDay = Carbon::parse((string) $this->input('scheduled_pickup_at'))->setTimezone($zone)->toDateString();
+                $lastDay = Carbon::parse((string) $recurrence['until'], $zone)->toDateString();
+
+                if ($lastDay < $firstDay && ! $validator->errors()->has('recurrence.until')) {
+                    $validator->errors()->add('recurrence.until', 'The series cannot end before its first ride.');
+                }
             }
         }];
     }

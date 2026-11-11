@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Support\UserTimezone;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -19,6 +20,23 @@ class UpdateRideRequest extends FormRequest
     public function authorize(): bool
     {
         return $this->user()->canDo('rides.update');
+    }
+
+    /** datetime-local values are the requester's wall clock; store UTC. */
+    protected function prepareForValidation(): void
+    {
+        $timezone = UserTimezone::fromRequest($this);
+        $normalized = [];
+
+        foreach (['scheduled_pickup_at', 'return_pickup_at'] as $field) {
+            if ($this->filled($field)) {
+                $normalized[$field] = UserTimezone::toUtc($this->input($field), $timezone);
+            }
+        }
+
+        if ($normalized !== []) {
+            $this->merge($normalized);
+        }
     }
 
     public function rules(): array

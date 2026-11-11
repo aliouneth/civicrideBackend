@@ -7,6 +7,7 @@ use App\Jobs\ExportReportJob;
 use App\Models\ReportExport;
 use App\Models\Ride;
 use App\Services\SecurityAuditLogger;
+use App\Support\UserTimezone;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -21,10 +22,12 @@ class ReportController extends Controller
             'to' => ['required', 'date', 'after_or_equal:from'],
         ]);
 
-        // Date inputs arrive as YYYY-MM-DD: cover the full days, otherwise a
-        // same-day query (the picker's default) only matches exact midnight.
-        $from = Carbon::parse($data['from'])->startOfDay();
-        $to = Carbon::parse($data['to'])->endOfDay();
+        // Date inputs arrive as YYYY-MM-DD: cover the full days in the
+        // requester's zone, otherwise a same-day query (the picker's default)
+        // only matches exact midnight.
+        $timezone = UserTimezone::fromRequest($request);
+        $from = Carbon::parse($data['from'], $timezone)->startOfDay()->utc();
+        $to = Carbon::parse($data['to'], $timezone)->endOfDay()->utc();
         $tenantId = app('tenant')->id;
 
         // Ride carries the tenant global scope, so this stays inside the agency.
@@ -67,6 +70,9 @@ class ReportController extends Controller
     /** Queue an async CSV/JSON export; poll show() until ready. */
     public function export(Request $request)
     {
+        // Exports move PHI/PII out of the app: supervisor/admin only.
+        abort_if(! $request->user()->canDo('reports.export'), 403);
+
         $data = $request->validate([
             'type' => ['required', 'string', 'in:rides.daily,rides.range,driver.performance,tenant.metrics'],
             'format' => ['required', 'string', 'in:csv,json'],
@@ -78,7 +84,8 @@ class ReportController extends Controller
         $export = ReportExport::create([
             'requested_by' => $request->user()->id,
             'type' => $data['type'],
-            'filters' => $data,
+            // Pin the requester's zone: the queued job runs without a request.
+            'filters' => [...$data, 'timezone' => UserTimezone::fromRequest($request)],
             'status' => 'queued',
         ]);
 
@@ -90,8 +97,10 @@ class ReportController extends Controller
         return response()->json($export, 202);
     }
 
-    public function show(ReportExport $reportExport)
+    public function show(Request $request, ReportExport $reportExport)
     {
+        abort_if(! $request->user()->canDo('reports.export'), 403);
+
         return response()->json($reportExport);
     }
 }

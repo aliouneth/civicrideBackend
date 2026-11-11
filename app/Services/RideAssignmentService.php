@@ -128,7 +128,9 @@ class RideAssignmentService
      */
     private function assertNoOverlap(DriverProfile $driver, Ride $newRide): void
     {
-        $now = $this->tenantWallClock($newRide);
+        // Every pickup is stored as a UTC instant, so the clock comparisons are
+        // zone-free - the same instant reads correctly in any user's zone.
+        $now = Carbon::now();
         $startsSoon = $newRide->scheduled_pickup_at->lessThanOrEqualTo(
             $now->copy()->addMinutes(self::OVERLAP_BUFFER_MINUTES)
         );
@@ -169,17 +171,5 @@ class RideAssignmentService
         return ValidationException::withMessages([
             'driver' => ['Driver already has an overlapping ride (double-booking prevented).'],
         ]);
-    }
-
-    /**
-     * The agency's current wall-clock time, expressed the same way
-     * scheduled_pickup_at is stored (local time without an offset).
-     */
-    private function tenantWallClock(Ride $ride): Carbon
-    {
-        $timezone = $ride->tenant?->settings?->timezone ?? 'UTC';
-        $timezone = in_array($timezone, timezone_identifiers_list(), true) ? $timezone : 'UTC';
-
-        return Carbon::parse(Carbon::now($timezone)->toDateTimeString());
     }
 }

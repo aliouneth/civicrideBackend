@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Ride;
 use App\Models\RideStatus;
 use App\Services\RideTransitionService;
+use App\Support\UserTimezone;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -146,7 +147,11 @@ class RideSeriesController extends Controller
             throw ValidationException::withMessages(['days' => ['Enter a non-zero number of days.']]);
         }
 
-        [$shifted, $skipped] = DB::transaction(function () use ($rides, $days) {
+        // Shift on the requester's calendar so "plus one day" keeps the same
+        // local pickup time even when the span crosses a DST change.
+        $timezone = UserTimezone::fromRequest($request);
+
+        [$shifted, $skipped] = DB::transaction(function () use ($rides, $days, $timezone) {
             $shifted = 0;
             $skipped = 0;
 
@@ -157,11 +162,13 @@ class RideSeriesController extends Controller
                     continue;
                 }
 
-                $ride->scheduled_pickup_at = $ride->scheduled_pickup_at->copy()->addDays($days);
+                $ride->scheduled_pickup_at = $ride->scheduled_pickup_at->copy()
+                    ->setTimezone($timezone)->addDays($days)->utc();
                 // A roundtrip occurrence keeps its own return gap: move the
                 // return time by the same shift so the pair stays consistent.
                 if ($ride->return_pickup_at !== null) {
-                    $ride->return_pickup_at = $ride->return_pickup_at->copy()->addDays($days);
+                    $ride->return_pickup_at = $ride->return_pickup_at->copy()
+                        ->setTimezone($timezone)->addDays($days)->utc();
                 }
                 $ride->save();
                 $shifted++;

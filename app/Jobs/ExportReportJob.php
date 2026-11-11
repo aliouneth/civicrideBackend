@@ -4,7 +4,9 @@ namespace App\Jobs;
 
 use App\Models\ReportExport;
 use App\Models\Ride;
+use App\Support\UserTimezone;
 use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Support\Carbon;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Storage;
 
@@ -27,7 +29,7 @@ class ExportReportJob implements ShouldQueue
             $rows = $this->collectRows();
             $path = "tenants/{$export->tenant_id}/exports/{$export->id}.{$export->filters['format']}";
 
-            Storage::disk('s3')->put($path, $this->serialize($rows, $export->filters['format']));
+            Storage::disk(config('reports.export_disk'))->put($path, $this->serialize($rows, $export->filters['format']));
             $export->update(['status' => 'ready', 'file_path' => $path, 'finished_at' => now()]);
         } catch (\Throwable $e) {
             $export->update(['status' => 'failed', 'error' => $e->getMessage(), 'finished_at' => now()]);
@@ -39,9 +41,17 @@ class ExportReportJob implements ShouldQueue
     {
         $filters = $this->export->filters;
 
+        // The zone the export was requested in: day bounds and the local
+        // pickup column both use it, so the file matches what they saw.
+        $timezone = UserTimezone::isValid($filters['timezone'] ?? null)
+            ? (string) $filters['timezone']
+            : UserTimezone::tenantDefault();
+
         $query = Ride::with(['status', 'activeAssignment.driver.user'])
-            ->when($filters['from'] ?? null, fn ($q, $from) => $q->whereDate('scheduled_pickup_at', '>=', $from))
-            ->when($filters['to'] ?? null, fn ($q, $to) => $q->whereDate('scheduled_pickup_at', '<=', $to))
+            ->when($filters['from'] ?? null, fn ($q, $from) => $q
+                ->where('scheduled_pickup_at', '>=', Carbon::parse($from, $timezone)->startOfDay()->utc()))
+            ->when($filters['to'] ?? null, fn ($q, $to) => $q
+                ->where('scheduled_pickup_at', '<=', Carbon::parse($to, $timezone)->endOfDay()->utc()))
             ->orderBy('id');
 
         $rows = [];
@@ -52,7 +62,7 @@ class ExportReportJob implements ShouldQueue
                 'passenger' => $ride->passenger_info['name'] ?? null,
                 'pickup' => $ride->pickup_address,
                 'dropoff' => $ride->dropoff_address,
-                'scheduled_pickup_at' => $ride->scheduled_pickup_at->toIso8601String(),
+                'scheduled_pickup_at' => $ride->scheduled_pickup_at->tz($timezone)->toIso8601String(),
                 'driver' => $ride->activeAssignment?->driver?->user?->name,
             ];
         }

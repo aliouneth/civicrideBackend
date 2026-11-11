@@ -119,6 +119,39 @@ class DriverRideScopeTest extends TestCase
         $this->assertNotContains($lateYesterday->id, $ids);
     }
 
+    public function test_today_scope_follows_the_drivers_phone_timezone_header(): void
+    {
+        // 03:30 UTC: Nov 9 22:30 in New York, Nov 10 12:30 in Tokyo. The ride
+        // at 06:00 UTC is 01:00 on the 10th in New York but 15:00 on the 10th
+        // in Tokyo, so it is "tomorrow" for one driver and "today" for the other.
+        $this->travelTo(Carbon::parse('2026-11-10 03:30:00', 'UTC'));
+        $ride = $this->assignRide('assigned', Carbon::parse('2026-11-10 06:00:00', 'UTC'));
+
+        $newYork = $this->withHeader('X-Timezone', 'America/New_York')
+            ->getJson('/api/v1/drivers/me/rides?scope=today');
+        $this->assertNotContains($ride->id, $this->rideIds($newYork));
+
+        $tokyo = $this->withHeader('X-Timezone', 'Asia/Tokyo')
+            ->getJson('/api/v1/drivers/me/rides?scope=today');
+        $this->assertContains($ride->id, $this->rideIds($tokyo));
+    }
+
+    public function test_month_filter_follows_the_drivers_phone_timezone_header(): void
+    {
+        // 03:00 UTC on Nov 1 is still Oct 31 in New York, so a 02:00 UTC ride
+        // belongs to October for that driver - not to the UTC November.
+        $this->travelTo(Carbon::parse('2026-11-01 03:00:00', 'UTC'));
+        $ride = $this->assignRide('completed', Carbon::parse('2026-11-01 02:00:00', 'UTC'));
+
+        $october = $this->withHeader('X-Timezone', 'America/New_York')
+            ->getJson('/api/v1/drivers/me/rides?status=completed&month=2026-10');
+        $this->assertContains($ride->id, $this->rideIds($october));
+
+        $november = $this->withHeader('X-Timezone', 'America/New_York')
+            ->getJson('/api/v1/drivers/me/rides?status=completed&month=2026-11');
+        $this->assertNotContains($ride->id, $this->rideIds($november));
+    }
+
     public function test_today_scope_leaves_out_rides_the_driver_already_finished(): void
     {
         $finished = $this->assignRide('completed', Carbon::now()->setTimeFromTimeString('09:00'));

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\UserTimezone;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Str;
 
@@ -21,22 +22,30 @@ class RecurringRideService
 
     /**
      * @param  array{frequency: string, interval: int, count?: int|null, until?: string|null}  $rule
-     * @return list<CarbonImmutable> subsequent instants, in ascending order (may be empty)
+     * @return list<CarbonImmutable> subsequent instants (UTC), in ascending order (may be empty)
      */
-    public function expand(CarbonImmutable $first, array $rule): array
+    public function expand(CarbonImmutable $first, array $rule, ?string $timezone = null): array
     {
         $frequency = $rule['frequency'];
         if (! in_array($frequency, self::FREQUENCIES, true)) {
             throw new \InvalidArgumentException("Unsupported recurrence frequency [{$frequency}].");
         }
 
+        // Recurrence is a local-clock concept: "every Monday at 9am" stays 9am
+        // through daylight-saving changes. Advance in the requester's zone and
+        // convert each occurrence back to a UTC instant for storage.
+        $zone = UserTimezone::isValid($timezone) ? (string) $timezone : 'UTC';
+        $anchor = $first->copy()->setTimezone($zone);
+
         $interval = max(1, (int) $rule['interval']);
-        $limit = min($this->resolveLimit($first, $rule), self::MAX_OCCURRENCES);
+        $limit = min($this->resolveLimit($anchor, $rule, $zone), self::MAX_OCCURRENCES);
         if ($limit <= 1) {
             return [];
         }
 
-        $bound = ! empty($rule['until']) ? CarbonImmutable::parse($rule['until'])->endOfDay() : null;
+        $bound = ! empty($rule['until'])
+            ? CarbonImmutable::parse($rule['until'], $zone)->endOfDay()
+            : null;
 
         $instants = [];
         for ($i = 1; $i < $limit; $i++) {
@@ -44,13 +53,13 @@ class RecurringRideService
             // chaining would pin a 31 Jan monthly series to the 28th for good once
             // it passes through February. addMonthsNoOverflow instead gives
             // 31 Jan -> 28 Feb -> 31 Mar -> 30 Apr.
-            $at = $this->advance($first, $frequency, $interval * $i);
+            $at = $this->advance($anchor, $frequency, $interval * $i);
 
             if ($bound !== null && $at->gt($bound)) {
                 break;
             }
 
-            $instants[] = $at;
+            $instants[] = $at->setTimezone('UTC');
         }
 
         return $instants;
@@ -63,14 +72,14 @@ class RecurringRideService
     }
 
     /** Total occurrences requested, from either an explicit count or an end date. */
-    private function resolveLimit(CarbonImmutable $first, array $rule): int
+    private function resolveLimit(CarbonImmutable $first, array $rule, string $zone): int
     {
         if (! empty($rule['count'])) {
             return (int) $rule['count'];
         }
 
         if (! empty($rule['until'])) {
-            $last = CarbonImmutable::parse($rule['until'])->endOfDay();
+            $last = CarbonImmutable::parse($rule['until'], $zone)->endOfDay();
             $interval = max(1, (int) $rule['interval']);
             $days = (int) abs($first->diffInDays($last));
 

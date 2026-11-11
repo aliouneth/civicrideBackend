@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Ride;
 use App\Models\RideStatus;
+use App\Support\UserTimezone;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 
 /**
  * Dispatch board, grouped for scanning. Grouping happens server-side because the
@@ -67,14 +69,20 @@ class RideBoardController extends Controller
         // days/past_days window only fills in whichever bound they left blank.
         // A forward-looking window ("Next x days", pastDays = 0) must still
         // cover all of today, not just rides later than the current clock time.
+        // Dates are calendar days in the requester's zone; rides are stored UTC.
+        $timezone = UserTimezone::fromRequest($request);
+        $localNow = Carbon::now($timezone);
+
         if ($startDate) {
-            $from = \Illuminate\Support\Carbon::parse($startDate)->startOfDay();
+            $from = Carbon::parse($startDate, $timezone)->startOfDay()->utc();
         } elseif ($pastDays === 0) {
-            $from = now()->startOfDay();
+            $from = $localNow->copy()->startOfDay()->utc();
         } else {
-            $from = now()->subDays($pastDays);
+            $from = $localNow->copy()->subDays($pastDays)->utc();
         }
-        $to = $endDate ? \Illuminate\Support\Carbon::parse($endDate)->endOfDay() : now()->addDays($days);
+        $to = $endDate
+            ? Carbon::parse($endDate, $timezone)->endOfDay()->utc()
+            : $localNow->copy()->addDays($days)->utc();
 
         $rides = Ride::with(['status', 'activeAssignment.driver.user'])
             ->whereIn('status_id', $statusIds)
@@ -102,7 +110,7 @@ class RideBoardController extends Controller
             'total' => $rides->count(),
             'truncated' => $rides->count() >= $limit,
             'query' => ['q' => $q ?: null, 'unassigned' => $unassigned, 'series_only' => $seriesOnly, 'include_completed' => $includeCompleted, 'include_distance' => $includeDistance],
-            'groups' => $this->group($rides, $by)->values(),
+            'groups' => $this->group($rides, $by, $timezone)->values(),
         ]);
     }
 
@@ -141,7 +149,7 @@ class RideBoardController extends Controller
             ->orWhereRaw("LOWER(passenger_info->>'$.name') LIKE ?", [$jsonLike]);
     }
 
-    private function group($rides, string $by)
+    private function group($rides, string $by, string $timezone)
     {
         if ($by === 'none') {
             return collect([[
@@ -152,13 +160,13 @@ class RideBoardController extends Controller
             ]]);
         }
 
-        $keyed = $rides->groupBy(fn (Ride $r) => $this->keyFor($r, $by));
+        $keyed = $rides->groupBy(fn (Ride $r) => $this->keyFor($r, $by, $timezone));
         $out = [];
 
         foreach ($keyed as $key => $group) {
             $out[] = [
                 'key' => $key,
-                'label' => $this->labelFor($group->first(), $by),
+                'label' => $this->labelFor($group->first(), $by, $timezone),
                 'count' => $group->count(),
                 // Series groups surface which occurrence this is (2 of 8).
                 'meta' => $this->metaFor($group, $by),
@@ -169,20 +177,21 @@ class RideBoardController extends Controller
         return collect($out);
     }
 
-    private function keyFor(Ride $ride, string $by): string
+    private function keyFor(Ride $ride, string $by, string $timezone): string
     {
         return match ($by) {
-            'day' => $ride->scheduled_pickup_at->format('Y-m-d'),
+            // The board groups by the requester's calendar day, not UTC's.
+            'day' => $ride->scheduled_pickup_at->copy()->setTimezone($timezone)->format('Y-m-d'),
             'series' => $ride->series_key ?? self::ONE_OFF,
             'passenger' => strtolower(trim($ride->passenger_info['name'] ?? '')).'|'.($ride->passenger_info['phone'] ?? ''),
             'driver' => (string) ($ride->activeAssignment?->driver?->id ?? 0),
         };
     }
 
-    private function labelFor(Ride $ride, string $by): string
+    private function labelFor(Ride $ride, string $by, string $timezone): string
     {
         return match ($by) {
-            'day' => $ride->scheduled_pickup_at->format('D, M j'),
+            'day' => $ride->scheduled_pickup_at->copy()->setTimezone($timezone)->format('D, M j'),
             'series' => $ride->series_key ? ($ride->series_label ?: 'Unnamed series') : 'One-off rides',
             'passenger' => $ride->passenger_info['name'] ?? 'Unknown passenger',
             'driver' => $ride->activeAssignment?->driver?->user?->name ?? 'Unassigned',

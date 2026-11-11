@@ -8,7 +8,7 @@ use App\Models\DriverProfile;
 use App\Models\Ride;
 use App\Models\RideAttestation;
 use App\Services\RideAssignmentService;
-use App\Services\TenantDayRange;
+use App\Support\UserTimezone;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 
@@ -305,28 +305,27 @@ class DriverController extends Controller
         $profile = $request->user()->driverProfile()->firstOrFail();
         $scope = $data['scope'] ?? null;
 
-        [$dayStart, $dayEnd] = TenantDayRange::for(app('tenant'))->bounds();
+        // The driver's day is their phone's calendar day, not the server's.
+        $timezone = UserTimezone::fromRequest($request);
+        [$dayStart, $dayEnd] = UserTimezone::dayBounds($timezone);
 
         $rides = Ride::with(['status', 'events', 'activeAssignment.driver.user'])
             ->whereHas('assignments', fn ($q) => $q
                 ->where('driver_profile_id', $profile->id)
                 ->whereNull('unassigned_at'))
             ->when($request->status, fn ($q, $code) => $q->whereHas('status', fn ($s) => $s->where('code', $code)))
-            ->when($request->month, function ($q, string $month): void {
+            ->when($request->month, function ($q, string $month) use ($timezone): void {
                 // Guard non-conforming values so they fall through to "no filter".
                 if (preg_match('/^\d{4}-\d{2}$/', $month) !== 1) {
                     return;
                 }
-                [$year, $m] = explode('-', $month);
-                $q->whereYear('scheduled_pickup_at', (int) $year)
-                    ->whereMonth('scheduled_pickup_at', (int) $m);
+                [$from, $to] = UserTimezone::monthBounds($timezone, $month);
+                $q->where('scheduled_pickup_at', '>=', $from)
+                    ->where('scheduled_pickup_at', '<', $to);
             })
             ->when($scope === 'today', fn ($q) => $q->where(function ($q) use ($dayStart, $dayEnd) {
                 $q->where(function ($q) use ($dayStart, $dayEnd) {
-                    // Include the previous day too: a ride stored just before
-                    // midnight (or in a behind-UTC timezone) must not fall out of
-                    // the driver's job list.
-                    $q->where('scheduled_pickup_at', '>=', $dayStart->copy()->subDay())
+                    $q->where('scheduled_pickup_at', '>=', $dayStart)
                         ->where('scheduled_pickup_at', '<', $dayEnd);
                 })->whereHas('status', fn ($s) => $s->whereIn('code', self::OPEN_DRIVER_STATUSES))
                     // A ride still under way belongs on the job list even when it
@@ -390,7 +389,8 @@ class DriverController extends Controller
             'driver_profile_id' => ['sometimes', 'nullable', 'integer'],
         ]);
 
-        [$year, $m] = explode('-', $data['month']);
+        $timezone = UserTimezone::fromRequest($request);
+        [$from, $to] = UserTimezone::monthBounds($timezone, $data['month']);
 
         $user = $request->user();
         $profile = $user->driverProfile()->exists()
@@ -401,8 +401,8 @@ class DriverController extends Controller
             ->whereHas('assignments', fn ($q) => $q
                 ->where('driver_profile_id', $profile->id)
                 ->whereNull('unassigned_at'))
-            ->whereYear('scheduled_pickup_at', (int) $year)
-            ->whereMonth('scheduled_pickup_at', (int) $m)
+            ->where('scheduled_pickup_at', '>=', $from)
+            ->where('scheduled_pickup_at', '<', $to)
             ->orderBy('scheduled_pickup_at')
             ->get();
 
@@ -488,11 +488,13 @@ class DriverController extends Controller
             'driver_profile_id' => ['sometimes', 'integer'],
         ]);
 
+        $timezone = UserTimezone::fromRequest($request);
+
         $query = RideAttestation::with(['ride.status', 'ride.events.toStatus', 'driverProfile.user'])
             ->where('tenant_id', app('tenant')->id)
-            ->when($data['month'] ?? null, function ($q, string $month): void {
-                [$year, $m] = explode('-', $month);
-                $q->whereYear('attested_at', (int) $year)->whereMonth('attested_at', (int) $m);
+            ->when($data['month'] ?? null, function ($q, string $month) use ($timezone): void {
+                [$from, $to] = UserTimezone::monthBounds($timezone, $month);
+                $q->where('attested_at', '>=', $from)->where('attested_at', '<', $to);
             })
             ->when($data['driver_profile_id'] ?? null, fn ($q, $id) => $q->where('driver_profile_id', $id))
             ->orderByDesc('attested_at');

@@ -6,6 +6,7 @@ use App\Events\RideStatusUpdated;
 use App\Models\Ride;
 use App\Models\RideStatus;
 use App\Models\User;
+use App\Support\UserTimezone;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -26,15 +27,15 @@ class RideTransitionService
         'cancelled' => [],
     ];
 
-    public function transition(Ride $ride, string $toCode, User $actor, array $metadata = []): Ride
+    public function transition(Ride $ride, string $toCode, User $actor, array $metadata = [], ?string $timezone = null): Ride
     {
-        return DB::transaction(function () use ($ride, $toCode, $actor, $metadata) {
+        return DB::transaction(function () use ($ride, $toCode, $actor, $metadata, $timezone) {
             // Row lock: two drivers completing/cancelling the same ride race here.
             $locked = Ride::whereKey($ride->id)->lockForUpdate()->firstOrFail();
             $fromCode = $locked->status->code;
 
             $this->assertTransitionAllowed($fromCode, $toCode);
-            $this->assertCanStart($locked, $toCode, $actor);
+            $this->assertCanStart($locked, $toCode, $actor, $timezone);
 
             $toStatus = RideStatus::where('code', $toCode)->firstOrFail();
             $fromStatusId = $locked->status_id;
@@ -72,18 +73,17 @@ class RideTransitionService
     }
 
     /** Drivers may only start rides that are due today; schedulers are unconstrained. */
-    private function assertCanStart(Ride $ride, string $toCode, User $actor): void
+    private function assertCanStart(Ride $ride, string $toCode, User $actor, ?string $timezone): void
     {
         if ($toCode !== 'en_route' || $actor->driverProfile === null) {
             return;
         }
 
-        // "Today" follows the agency's timezone, not the server's UTC clock,
-        // and a ride from the previous day may still be started (a driver who
-        // missed the pickup window should not be locked out of their own ride).
-        $timezone = $ride->tenant?->settings?->timezone ?? 'UTC';
-        $timezone = in_array($timezone, timezone_identifiers_list(), true) ? $timezone : 'UTC';
-        $pickup = $ride->scheduled_pickup_at->copy()->setTimezone($timezone);
+        // "Today" follows the requester's zone (the driver's phone), falling
+        // back to the agency's. A ride from the previous day may still be
+        // started - a driver who missed the window stays on their own ride.
+        $zone = UserTimezone::isValid($timezone) ? (string) $timezone : UserTimezone::tenantDefault();
+        $pickup = $ride->scheduled_pickup_at->copy()->setTimezone($zone);
         if (! $pickup->isToday() && ! $pickup->isYesterday()) {
             throw ValidationException::withMessages([
                 'to_code' => ['This ride is scheduled for another day and cannot be started today.'],

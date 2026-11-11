@@ -10,7 +10,7 @@ use App\Models\Ride;
 use App\Models\RideStatus;
 use App\Services\RecurringRideService;
 use App\Services\RideTransitionService;
-use App\Services\TenantDayRange;
+use App\Support\UserTimezone;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -34,14 +34,21 @@ class RideController extends Controller
             'scope' => ['nullable', 'in:upcoming'],
         ]);
 
-        $dayStart = \Illuminate\Support\Carbon::now('UTC')->startOfDay()->toDateTimeString();
+        $timezone = UserTimezone::fromRequest($request);
+        [$dayStart] = UserTimezone::dayBounds($timezone);
 
         $query = Ride::with(['status', 'activeAssignment.driver.user'])
             ->when($request->status, fn ($q, $code) => $q->whereHas('status', fn ($s) => $s->where('code', $code)))
             ->when($request->driver_profile_id, fn ($q, $id) => $q->whereHas(
                 'assignments', fn ($a) => $a->where('driver_profile_id', $id)->whereNull('unassigned_at')
             ))
-            ->when($request->date, fn ($q, $date) => $q->whereDate('scheduled_pickup_at', $date))
+            ->when($request->date, function ($q, $date) use ($timezone): void {
+                // ?date is a calendar day in the requester's zone.
+                $day = \Illuminate\Support\Carbon::parse($date, $timezone);
+                [$from, $to] = UserTimezone::dayBounds($timezone, $day);
+                $q->where('scheduled_pickup_at', '>=', $from)
+                    ->where('scheduled_pickup_at', '<', $to);
+            })
             ->when($request->series_key, fn ($q, $key) => $q->where('series_key', $key))
             ->when(($data['scope'] ?? null) === 'upcoming', fn ($q) => $q->where('scheduled_pickup_at', '>=', $dayStart))
             ->orderBy('scheduled_pickup_at')
@@ -60,6 +67,7 @@ class RideController extends Controller
      */
     public function store(StoreRideRequest $request)
     {
+        $timezone = UserTimezone::fromRequest($request);
         $rule = $request->recurrenceRule();
         $data = $request->validated();
         unset($data['recurrence']);
@@ -74,7 +82,7 @@ class RideController extends Controller
         // A series (or an outbound + return pair) is all-or-nothing: a
         // half-written booking would sit on the board missing its other half,
         // so commit or roll back.
-        [$first, $size, $return] = DB::transaction(function () use ($request, $data, $rule, $statusId, $seriesKey, $split) {
+        [$first, $size, $return] = DB::transaction(function () use ($request, $data, $rule, $statusId, $seriesKey, $split, $timezone) {
             $base = [
                 ...$data,
                 'status_id' => $statusId,
@@ -88,7 +96,7 @@ class RideController extends Controller
 
             $pickupAt = CarbonImmutable::parse($data['scheduled_pickup_at']);
             $rest = $rule
-                ? $this->recurring->expand($pickupAt, $rule)
+                ? $this->recurring->expand($pickupAt, $rule, $timezone)
                 : [];
 
             // A recurring roundtrip keeps one return per occurrence, offset from
@@ -254,7 +262,7 @@ class RideController extends Controller
             'lat' => $data['lat'] ?? null,
             'lng' => $data['lng'] ?? null,
             'mileage_claimed' => $data['mileage_claimed'] ?? null,
-        ]);
+        ], UserTimezone::fromRequest($request));
 
         return response()->json($updated);
     }

@@ -132,32 +132,6 @@ class DriverRideScopeTest extends TestCase
         $this->assertNotContains($cancelled->id, $ids);
     }
 
-    public function test_completed_today_scope_lists_only_the_days_finished_rides(): void
-    {
-        $finishedToday = $this->assignRide('completed', Carbon::now()->setTimeFromTimeString('09:00'));
-        $finishedYesterday = $this->assignRide('completed', Carbon::now()->subDays(2)->setTimeFromTimeString('10:00'));
-        $stillOpen = $this->assignRide('assigned', Carbon::now()->setTimeFromTimeString('15:00'));
-
-        $ids = $this->rideIds($this->getJson('/api/v1/drivers/me/rides?scope=completed_today'));
-
-        $this->assertContains($finishedToday->id, $ids);
-        $this->assertNotContains($finishedYesterday->id, $ids);
-        $this->assertNotContains($stillOpen->id, $ids);
-    }
-
-    public function test_completed_today_scope_follows_the_agency_timezone(): void
-    {
-        $this->tenant->settings()->update(['timezone' => 'America/Chicago']);
-
-        $lateYesterday = $this->assignRide('completed', Carbon::now('America/Chicago')->subDays(2)->setTimeFromTimeString('20:00')->setTimezone('UTC'));
-        $today = $this->assignRide('completed', Carbon::now('America/Chicago')->setTimeFromTimeString('08:00')->setTimezone('UTC'));
-
-        $ids = $this->rideIds($this->getJson('/api/v1/drivers/me/rides?scope=completed_today'));
-
-        $this->assertContains($today->id, $ids);
-        $this->assertNotContains($lateYesterday->id, $ids);
-    }
-
     public function test_later_scope_lists_only_the_following_days(): void
     {
         $yesterday = $this->assignRide('assigned', Carbon::now()->subDays(2)->setTimeFromTimeString('10:00'));

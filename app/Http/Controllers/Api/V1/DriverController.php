@@ -291,16 +291,15 @@ class DriverController extends Controller
      * Driver's own rides: active first, then upcoming. Optional status/month filters back the history view.
      *
      * `scope` narrows the list to the driver's working window: "today" (the
-     * agency's current day, plus any ride still in progress), "later" (rides
-     * scheduled on a following day), or "completed_today" (the rides finished
-     * during the agency's current day). Only rides the driver still has to work
-     * are returned by the first two; days that are already over belong to the
-     * history view, not to the driver's job list.
+     * agency's current day, plus any ride still in progress) or "later" (rides
+     * scheduled on a following day). Only rides the driver still has to work
+     * are returned; days that are already over belong to the history view,
+     * not to the driver's job list.
      */
     public function myRides(Request $request)
     {
         $data = $request->validate([
-            'scope' => ['nullable', 'in:today,later,completed_today'],
+            'scope' => ['nullable', 'in:today,later'],
         ]);
 
         $profile = $request->user()->driverProfile()->firstOrFail();
@@ -337,10 +336,6 @@ class DriverController extends Controller
             ->when($scope === 'later', fn ($q) => $q
                 ->where('scheduled_pickup_at', '>=', $dayEnd)
                 ->whereHas('status', fn ($s) => $s->whereIn('code', self::OPEN_DRIVER_STATUSES)))
-            ->when($scope === 'completed_today', fn ($q) => $q
-                ->where('scheduled_pickup_at', '>=', $dayStart)
-                ->where('scheduled_pickup_at', '<', $dayEnd)
-                ->whereHas('status', fn ($s) => $s->where('code', 'completed')))
             ->orderBy('scheduled_pickup_at', $request->sort === 'desc' ? 'desc' : 'asc')
             ->cursorPaginate(25);
 

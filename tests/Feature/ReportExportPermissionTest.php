@@ -125,13 +125,15 @@ class ReportExportPermissionTest extends TestCase
         Storage::fake(config('reports.export_disk'));
         Sanctum::actingAs($this->admin);
 
-        $status = RideStatus::create([
-            'code' => 'pending',
-            'label' => 'Pending',
-            'sort_order' => 1,
-            'is_terminal' => false,
-            'allows_assignment' => true,
-        ]);
+        $status = RideStatus::firstOrCreate(
+            ['code' => 'pending'],
+            [
+                'label' => 'Pending',
+                'sort_order' => 1,
+                'is_terminal' => false,
+                'allows_assignment' => true,
+            ],
+        );
         Ride::create([
             'tenant_id' => $this->tenant->id,
             'status_id' => $status->id,

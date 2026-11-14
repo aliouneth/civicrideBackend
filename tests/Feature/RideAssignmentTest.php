@@ -66,13 +66,15 @@ class RideAssignmentTest extends TestCase
         ]);
 
         foreach (['pending', 'assigned', 'en_route', 'at_pickup', 'transporting', 'completed', 'cancelled'] as $index => $code) {
-            $this->statuses[$code] = RideStatus::create([
-                'code' => $code,
-                'label' => ucfirst(str_replace('_', ' ', $code)),
-                'sort_order' => $index + 1,
-                'is_terminal' => in_array($code, ['completed', 'cancelled'], true),
-                'allows_assignment' => in_array($code, ['pending', 'assigned'], true),
-            ]);
+            $this->statuses[$code] = RideStatus::firstOrCreate(
+                ['code' => $code],
+                [
+                    'label' => ucfirst(str_replace('_', ' ', $code)),
+                    'sort_order' => $index + 1,
+                    'is_terminal' => in_array($code, ['completed', 'cancelled'], true),
+                    'allows_assignment' => in_array($code, ['pending', 'assigned'], true),
+                ],
+            );
         }
     }
 

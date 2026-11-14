@@ -11,14 +11,16 @@ class RideStatusSeeder extends Seeder
 {
     public function run(): void
     {
+        // Upsert by code, not id: databases seeded with the old lifecycle have
+        // ids that rides.status_id / ride_events already reference.
         DB::table('ride_statuses')->upsert([
-            ['id' => 1, 'code' => 'pending',    'label' => 'Pending',    'sort_order' => 10, 'is_terminal' => false, 'allows_assignment' => true],
-            ['id' => 2, 'code' => 'assigned',   'label' => 'Assigned',   'sort_order' => 20, 'is_terminal' => false, 'allows_assignment' => true],
-            ['id' => 3, 'code' => 'en_route',   'label' => 'En route',   'sort_order' => 30, 'is_terminal' => false, 'allows_assignment' => false],
-            ['id' => 4, 'code' => 'at_pickup',    'label' => 'At pickup',    'sort_order' => 40, 'is_terminal' => false, 'allows_assignment' => false],
-            ['id' => 5, 'code' => 'transporting', 'label' => 'Transporting', 'sort_order' => 50, 'is_terminal' => false, 'allows_assignment' => false],
-            ['id' => 6, 'code' => 'completed',    'label' => 'Completed',    'sort_order' => 60, 'is_terminal' => true,  'allows_assignment' => false],
-            ['id' => 7, 'code' => 'cancelled',    'label' => 'Cancelled',    'sort_order' => 70, 'is_terminal' => true,  'allows_assignment' => false],
-        ], ['id']);
+            ['code' => 'pending',    'label' => 'Pending',    'sort_order' => 10, 'is_terminal' => false, 'allows_assignment' => true],
+            ['code' => 'assigned',   'label' => 'Assigned',   'sort_order' => 20, 'is_terminal' => false, 'allows_assignment' => true],
+            ['code' => 'en_route',   'label' => 'En route',   'sort_order' => 30, 'is_terminal' => false, 'allows_assignment' => false],
+            ['code' => 'at_pickup',  'label' => 'At pickup',  'sort_order' => 40, 'is_terminal' => false, 'allows_assignment' => false],
+            ['code' => 'transporting', 'label' => 'Transporting', 'sort_order' => 50, 'is_terminal' => false, 'allows_assignment' => false],
+            ['code' => 'completed',  'label' => 'Completed',  'sort_order' => 60, 'is_terminal' => true,  'allows_assignment' => false],
+            ['code' => 'cancelled',  'label' => 'Cancelled',  'sort_order' => 70, 'is_terminal' => true,  'allows_assignment' => false],
+        ], ['code'], ['label', 'sort_order', 'is_terminal', 'allows_assignment']);
     }
 }

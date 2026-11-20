@@ -22,6 +22,27 @@ class StoreRideRequest extends FormRequest
      */
     protected function prepareForValidation(): void
     {
+        $coordinates = [];
+        $geocoder = app(\App\Services\GeocodingService::class);
+        foreach (['pickup', 'dropoff'] as $point) {
+            $lat = $this->input("{$point}_lat");
+            $lng = $this->input("{$point}_lng");
+            if (is_numeric($lat) && is_numeric($lng)) {
+                continue;
+            }
+            $address = trim((string) $this->input("{$point}_address", ''));
+            if ($address !== '') {
+                $result = $geocoder->geocode($address);
+                if ($result !== null) {
+                    $coordinates["{$point}_lat"] = $result['lat'];
+                    $coordinates["{$point}_lng"] = $result['lng'];
+                }
+            }
+        }
+        if ($coordinates !== []) {
+            $this->merge($coordinates);
+        }
+
         $timezone = UserTimezone::fromRequest($this);
         $normalized = [];
 

@@ -43,6 +43,14 @@ class AuthController extends Controller
             throw ValidationException::withMessages(['email' => ['Email already registered in this agency.']]);
         }
 
+        if (! isset($data['home_lat']) || ! isset($data['home_lng'])) {
+            $coordinates = app(\App\Services\GeocodingService::class)->geocode((string) ($data['home_address'] ?? ''));
+            if ($coordinates !== null) {
+                $data['home_lat'] = $coordinates['lat'];
+                $data['home_lng'] = $coordinates['lng'];
+            }
+        }
+
         $driverRole = Role::where('tenant_id', $tenant->id)->where('name', 'driver')->firstOrFail();
 
         $user = User::create([

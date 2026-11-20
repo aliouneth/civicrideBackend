@@ -11,6 +11,7 @@ use App\Services\RideAssignmentService;
 use App\Support\UserTimezone;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\DB;
 
 class DriverController extends Controller
 {
@@ -36,6 +37,83 @@ class DriverController extends Controller
     public function show(DriverProfile $driverProfile)
     {
         return response()->json($driverProfile->load(['user', 'documents', 'availability']));
+    }
+
+    /** Save a driver's latest position during an assigned trip. */
+    public function updateLocation(Request $request)
+    {
+        $data = $request->validate([
+            'ride_id' => ['required', 'integer'],
+            'latitude' => ['required', 'numeric', 'between:-90,90'],
+            'longitude' => ['required', 'numeric', 'between:-180,180'],
+            'accuracy_meters' => ['nullable', 'numeric', 'min:0', 'max:100000'],
+            // Mobile outbox may replay GPS samples after a long period offline.
+            'recorded_at' => ['required', 'date', 'after_or_equal:'.now()->subDays(30)->toIso8601String(), 'before_or_equal:'.now()->addMinute()->toIso8601String()],
+        ]);
+        $profile = $request->user()->driverProfile()->firstOrFail();
+        $ride = Ride::whereKey($data['ride_id'])
+            ->whereHas('assignments', fn ($query) => $query
+                ->where('driver_profile_id', $profile->id)
+                ->whereNull('unassigned_at'))
+            ->whereHas('status', fn ($query) => $query->whereIn('code', ['en_route', 'at_pickup', 'transporting']))
+            ->firstOrFail();
+
+        DB::table('ride_location_points')->insert([
+            'tenant_id' => $profile->tenant_id,
+            'driver_profile_id' => $profile->id,
+            'ride_id' => $ride->id,
+            'latitude' => $data['latitude'],
+            'longitude' => $data['longitude'],
+            'accuracy_meters' => $data['accuracy_meters'] ?? null,
+            'recorded_at' => $data['recorded_at'],
+        ]);
+
+        $latest = DB::table('driver_locations')
+            ->where('tenant_id', $profile->tenant_id)
+            ->where('driver_profile_id', $profile->id)
+            ->first();
+        if (!$latest || strtotime($data['recorded_at']) >= strtotime($latest->recorded_at)) {
+            DB::table('driver_locations')->updateOrInsert(
+                ['tenant_id' => $profile->tenant_id, 'driver_profile_id' => $profile->id],
+                [
+                'ride_id' => $ride->id,
+                'latitude' => $data['latitude'],
+                'longitude' => $data['longitude'],
+                'accuracy_meters' => $data['accuracy_meters'] ?? null,
+                'recorded_at' => $data['recorded_at'],
+                'updated_at' => now(),
+                'created_at' => now(),
+                ],
+            );
+        }
+
+        return response()->json([
+            'saved' => true,
+            'gps_distance_miles' => app(\App\Services\RideGpsDistanceService::class)->forRide($ride->id, $ride->tenant_id),
+        ]);
+    }
+
+    /** Latest recent locations for drivers currently carrying an active ride. */
+    public function locations(Request $request)
+    {
+        abort_unless($request->user()->canDo('drivers.view'), 403);
+        $locations = DB::table('driver_locations as locations')
+            ->join('driver_profiles as drivers', 'drivers.id', '=', 'locations.driver_profile_id')
+            ->join('users', 'users.id', '=', 'drivers.user_id')
+            ->join('rides', 'rides.id', '=', 'locations.ride_id')
+            ->join('ride_statuses as statuses', 'statuses.id', '=', 'rides.status_id')
+            ->where('locations.tenant_id', app('tenant')->id)
+            ->whereIn('statuses.code', ['en_route', 'at_pickup', 'transporting'])
+            ->where('locations.recorded_at', '>=', now()->subMinutes(10))
+            ->select([
+                'drivers.id as driver_id', 'users.name as driver_name', 'rides.id as ride_id',
+                'rides.pickup_address', 'rides.dropoff_address', 'statuses.code as status',
+                'locations.latitude', 'locations.longitude', 'locations.accuracy_meters', 'locations.recorded_at',
+            ])
+            ->orderByDesc('locations.recorded_at')
+            ->get();
+
+        return response()->json(['data' => $locations]);
     }
 
     /** Onboarding: driver completes license + vehicle details. */
@@ -118,6 +196,10 @@ class DriverController extends Controller
         ]);
 
         $profile = $request->user()->driverProfile()->firstOrFail();
+        if ($data['home_address'] !== $profile->home_address) {
+            unset($data['home_lat'], $data['home_lng']);
+        }
+        $data = $this->fillMissingHomeCoordinates($data);
         $profile->update($data);
 
         return response()->json($profile->fresh());
@@ -132,6 +214,7 @@ class DriverController extends Controller
             'home_lng' => ['nullable', 'numeric', 'between:-180,180'],
             'onboarding_status' => ['sometimes', 'required', 'string', 'in:pending,approved,suspended'],
         ]);
+        $data = $this->fillMissingHomeCoordinates($data);
 
         $user = $request->user()->driverProfile()->firstOrFail()->user;
         // Create a new user+driver profile under the same tenant
@@ -189,6 +272,13 @@ class DriverController extends Controller
             'license_expiry' => ['sometimes', 'nullable', 'date'],
             'onboarding_status' => ['sometimes', 'string', 'in:pending,approved,suspended'],
         ]);
+
+        if (isset($data['home_address']) && $data['home_address'] !== $driverProfile->home_address) {
+            unset($data['home_lat'], $data['home_lng']);
+        }
+        if (isset($data['home_address'])) {
+            $data = $this->fillMissingHomeCoordinates($data);
+        }
 
         $this->applyDriverUpdates($driverProfile, $data);
 
@@ -264,6 +354,22 @@ class DriverController extends Controller
         }
 
         $driverProfile->save();
+    }
+
+    /** Resolve an entered home address when its coordinates were not supplied. */
+    private function fillMissingHomeCoordinates(array $data): array
+    {
+        if (! isset($data['home_address']) || (isset($data['home_lat']) && isset($data['home_lng']))) {
+            return $data;
+        }
+
+        $coordinates = app(\App\Services\GeocodingService::class)->geocode($data['home_address']);
+        if ($coordinates !== null) {
+            $data['home_lat'] = $coordinates['lat'];
+            $data['home_lng'] = $coordinates['lng'];
+        }
+
+        return $data;
     }
 
     /** Remove a driver profile. */

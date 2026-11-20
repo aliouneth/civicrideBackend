@@ -63,11 +63,13 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
         Route::get('drivers', [DriverController::class, 'index']);
         Route::get('drivers/report', [DriverController::class, 'report']);
         Route::get('drivers/attestations', [DriverController::class, 'attestations']);
+        Route::get('drivers/locations', [DriverController::class, 'locations']);
         Route::get('drivers/{driverProfile}', [DriverController::class, 'show']);
         Route::post('drivers', [DriverController::class, 'store']);
         Route::patch('drivers/{driverProfile}', [DriverController::class, 'update']);
         Route::delete('drivers/{driverProfile}', [DriverController::class, 'destroy']);
         Route::get('drivers/me/rides', [DriverController::class, 'myRides']);
+        Route::put('drivers/me/location', [DriverController::class, 'updateLocation']);
         Route::put('drivers/me', [DriverController::class, 'updateMe']);
         Route::put('drivers/availability', [DriverController::class, 'updateAvailability']);
         Route::put('drivers/me/home', [DriverController::class, 'updateHome']);

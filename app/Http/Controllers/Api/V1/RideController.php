@@ -159,10 +159,13 @@ class RideController extends Controller
     public function show(Ride $ride)
     {
         // Implicit binding is already tenant-scoped → foreign-tenant ids 404.
-        return response()->json($ride->load([
+        $ride->load([
             'status', 'requester', 'assignments.driver.user', 'events.toStatus', 'events.actor',
             'returnRide.status', 'outboundRide.status',
-        ]));
+        ]);
+        $ride->setAttribute('gps_distance_miles', app(\App\Services\RideGpsDistanceService::class)->forRide($ride->id, $ride->tenant_id));
+
+        return response()->json($ride);
     }
 
     /**

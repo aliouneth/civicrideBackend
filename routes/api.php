@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\DriverController;
 use App\Http\Controllers\Api\V1\MessageController;
+use App\Http\Controllers\Api\V1\NotificationController;
 use App\Http\Controllers\Api\V1\PlatformCancellationReasonController;
 use App\Http\Controllers\Api\V1\PlatformTenantController;
 use App\Http\Controllers\Api\V1\ReportController;
@@ -117,8 +118,13 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
         Route::post('users/invite', [UserController::class, 'invite']);
         Route::patch('users/{user}/active', [UserController::class, 'toggleActive']);
 
-        // Security audit trail (read-only; security.view permission)
+        // Security audit trail (read-only; writes go through SecurityAuditLogger)
         Route::get('security/events', [SecurityEventController::class, 'index']);
+
+        // Personal notification inbox (agency staff alerts, assignment updates)
+        Route::get('notifications', [NotificationController::class, 'index']);
+        Route::post('notifications/read-all', [NotificationController::class, 'markAllRead']);
+        Route::post('notifications/{notification}/read', [NotificationController::class, 'markRead']);
 
         // Messaging
         Route::get('messages', [MessageController::class, 'index']);

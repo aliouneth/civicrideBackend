@@ -258,6 +258,19 @@ class RideController extends Controller
             }
         }
 
+        // Rejecting an assignment is a driver action: only the currently assigned
+        // driver may release the ride back to the dispatch board as unassigned.
+        if (($data['to_code'] ?? null) === 'unassigned') {
+            $profile = $request->user()->driverProfile;
+            $isAssignedDriver = $profile !== null && $ride->assignments()
+                ->where('driver_profile_id', $profile->id)
+                ->whereNull('unassigned_at')
+                ->exists();
+            if (! $isAssignedDriver) {
+                return response()->json(['message' => 'Only the assigned driver may reject this ride.'], 403);
+            }
+        }
+
         $updated = $this->transitions->transition($ride, $data['to_code'], $request->user(), [
             'note' => $data['note'] ?? null,
             'incident' => $data['incident'] ?? null,

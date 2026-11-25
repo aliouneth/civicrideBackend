@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Events\RideStatusUpdated;
+use App\Models\Notification;
 use App\Models\Ride;
 use App\Models\RideStatus;
 use App\Models\User;
@@ -19,7 +20,7 @@ class RideTransitionService
     /** Allowed transitions by source status code. Terminal states map to []. */
     private const ALLOWED = [
         'pending' => ['assigned', 'cancelled'],
-        'assigned' => ['en_route', 'pending', 'cancelled'],
+        'assigned' => ['en_route', 'pending', 'cancelled', 'unassigned'],
         'en_route' => ['at_pickup', 'assigned', 'cancelled'],
         'at_pickup' => ['transporting', 'en_route', 'cancelled'],
         'transporting' => ['completed', 'at_pickup'],
@@ -37,12 +38,26 @@ class RideTransitionService
             $this->assertTransitionAllowed($fromCode, $toCode);
             $this->assertCanStart($locked, $toCode, $actor, $timezone);
 
-            $toStatus = RideStatus::where('code', $toCode)->firstOrFail();
+            // "unassigned" is a board action, not a lifecycle status: the ride
+            // returns to `pending` (awaiting a driver) and the assignment row is
+            // closed. Everything else uses its own status code.
+            $statusCode = $toCode === 'unassigned' ? 'pending' : $toCode;
+
+            $toStatus = RideStatus::where('code', $statusCode)->firstOrFail();
             $fromStatusId = $locked->status_id;
 
             $locked->status_id = $toStatus->id;
             if ($toCode === 'completed' && isset($metadata['mileage_claimed'])) {
                 $locked->mileage_claimed = $metadata['mileage_claimed'];
+            }
+            if ($toCode === 'unassigned') {
+                // Clear the active assignment: stamp unassigned_at and remove the driver
+                $assignment = $locked->activeAssignment;
+                if ($assignment) {
+                    $assignment->unassigned_at = now();
+                    $assignment->unassign_reason = $metadata['reason'] ?? 'Rejected by driver';
+                    $assignment->save();
+                }
             }
             $this->stampPhaseTimestamps($locked, $toCode);
             if ($toCode === 'cancelled') {
@@ -59,8 +74,42 @@ class RideTransitionService
 
             broadcast(new RideStatusUpdated($locked->fresh()))->toOthers();
 
+            if ($toCode === 'unassigned') {
+                $this->notifyAgencyOfRejection($locked, $actor, $metadata);
+            }
+
             return $locked->fresh(['status', 'activeAssignment']);
         });
+    }
+
+    /**
+     * Put a driver's rejection in every dispatcher's inbox. The ride is already
+     * back on the board as pending; this is the active alert that tells agency
+     * staff it needs a new driver.
+     *
+     * @param  array<string, mixed>  $metadata
+     */
+    private function notifyAgencyOfRejection(Ride $ride, User $actor, array $metadata): void
+    {
+        $staff = User::where('is_active', true)
+            ->whereHas('role', fn ($query) => $query->whereIn('name', ['supervisor', 'admin', 'scheduler']))
+            ->get();
+
+        foreach ($staff as $user) {
+            Notification::create([
+                'user_id' => $user->id,
+                'type' => 'ride.unassigned',
+                'data' => [
+                    'ride_id' => $ride->id,
+                    'passenger_name' => data_get($ride->passenger_info, 'name', 'Passenger'),
+                    'pickup_address' => $ride->pickup_address,
+                    'scheduled_pickup_at' => $ride->scheduled_pickup_at?->toIso8601String(),
+                    'rejected_by' => $actor->name,
+                    'reason' => $metadata['reason'] ?? 'Rejected by driver',
+                ],
+                'created_at' => now(),
+            ]);
+        }
     }
 
     private function assertTransitionAllowed(string $from, string $to): void

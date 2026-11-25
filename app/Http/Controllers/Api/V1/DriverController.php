@@ -97,21 +97,23 @@ class DriverController extends Controller
     public function locations(Request $request)
     {
         abort_unless($request->user()->canDo('drivers.view'), 403);
-        $locations = DB::table('driver_locations as locations')
+
+        $tenantId = app('tenant')?->id;
+        $query = DB::table('driver_locations as locations')
+            ->when($tenantId, fn ($q) => $q->where('locations.tenant_id', $tenantId))
             ->join('driver_profiles as drivers', 'drivers.id', '=', 'locations.driver_profile_id')
             ->join('users', 'users.id', '=', 'drivers.user_id')
             ->join('rides', 'rides.id', '=', 'locations.ride_id')
             ->join('ride_statuses as statuses', 'statuses.id', '=', 'rides.status_id')
-            ->where('locations.tenant_id', app('tenant')->id)
             ->whereIn('statuses.code', ['en_route', 'at_pickup', 'transporting'])
             ->where('locations.recorded_at', '>=', now()->subMinutes(10))
             ->select([
                 'drivers.id as driver_id', 'users.name as driver_name', 'rides.id as ride_id',
                 'rides.pickup_address', 'rides.dropoff_address', 'statuses.code as status',
                 'locations.latitude', 'locations.longitude', 'locations.accuracy_meters', 'locations.recorded_at',
-            ])
-            ->orderByDesc('locations.recorded_at')
-            ->get();
+            ]);
+
+        $locations = $query->orderByDesc('locations.recorded_at')->get();
 
         return response()->json(['data' => $locations]);
     }

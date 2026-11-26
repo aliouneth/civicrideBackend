@@ -6,17 +6,19 @@ use App\Models\Ride;
 
 /**
  * Total trip mileage for a ride = driver home → pickup + pickup → drop-off +
- * drop-off → driver home. Haversine straight-line distance in miles; null when
- * coordinates cannot be resolved.
+ * drop-off → driver home. Legs use Mapbox road distances, falling back to a
+ * straight-line estimate when routing is unavailable; null when coordinates
+ * cannot be resolved.
  *
  * A roundtrip kept as one ride runs the passenger circuit twice (out and back,
  * driver waiting at the far end): home → pickup → drop-off → pickup → home.
  */
 class RideDistanceService
 {
-    private const EARTH_RADIUS_MILES = 3958.8;
-
-    public function __construct(private GeocodingService $geocoder) {}
+    public function __construct(
+        private GeocodingService $geocoder,
+        private DrivingDistanceService $distanceService,
+    ) {}
 
     public function forRide(Ride $ride): ?float
     {
@@ -42,14 +44,14 @@ class RideDistanceService
             return null;
         }
 
-        $leg1 = $this->haversine($home[0], $home[1], $pickup[0], $pickup[1]);
-        $leg2 = $this->haversine($pickup[0], $pickup[1], $dropoff[0], $dropoff[1]);
-        $leg3 = $this->haversine($dropoff[0], $dropoff[1], $home[0], $home[1]);
+        $leg1 = $this->legMiles($home, $pickup);
+        $leg2 = $this->legMiles($pickup, $dropoff);
         // Split roundtrips are ordinary one-way legs (each priced on its own);
         // only a kept-as-one roundtrip doubles the circuit it actually drives.
+        // Skip the return-to-home request when that circuit is doubled.
         $total = $ride->isSingleRoundtrip()
             ? 2 * ($leg1 + $leg2)
-            : $leg1 + $leg2 + $leg3;
+            : $leg1 + $leg2 + $this->legMiles($dropoff, $home);
 
         \Log::info('Ride distance calculated', [
             'ride_id' => $ride->id,
@@ -78,13 +80,12 @@ class RideDistanceService
         return $geocoded ? [$geocoded['lat'], $geocoded['lng']] : null;
     }
 
-    /** Great-circle distance in miles between two lat/lng points. */
-    private function haversine(float $lat1, float $lng1, float $lat2, float $lng2): float
+    /**
+     * @param  array{0: float, 1: float}  $from
+     * @param  array{0: float, 1: float}  $to
+     */
+    private function legMiles(array $from, array $to): float
     {
-        $dLat = deg2rad($lat2 - $lat1);
-        $dLng = deg2rad($lng2 - $lng1);
-        $a = sin($dLat / 2) ** 2 + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * sin($dLng / 2) ** 2;
-
-        return self::EARTH_RADIUS_MILES * 2 * atan2(sqrt($a), sqrt(1 - $a));
+        return $this->distanceService->milesBetween($from[0], $from[1], $to[0], $to[1]) ?? 0.0;
     }
 }

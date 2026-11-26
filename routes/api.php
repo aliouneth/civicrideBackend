@@ -84,7 +84,12 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
             return response()->json(\App\Models\CancellationReason::activeList());
         });
 
-        // Server-side geocoding (avoids browser CORS / User-Agent restrictions)
+        // Server-side geocoding (avoids browser CORS / API keys in the client).
+        Route::get('geocode/suggest', function (\Illuminate\Http\Request $request) {
+            $query = trim((string) $request->query('q', ''));
+
+            return response()->json(app(\App\Services\GeocodingService::class)->suggest($query));
+        })->middleware('throttle:60,1');
         Route::get('geocode', function (\Illuminate\Http\Request $request) {
             $address = trim((string) $request->query('q', ''));
             if ($address === '') {
@@ -96,7 +101,7 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
             }
 
             return response()->json($result['result']);
-        });
+        })->middleware('throttle:60,1');
         Route::get('drivers/me/documents/{documentId}', [DriverController::class, 'downloadOwnDocument']);
         Route::post('drivers/{driverProfile}/documents', [DriverController::class, 'uploadDocument']);
         Route::get('drivers/{driverProfile}/documents/{documentId}', [DriverController::class, 'downloadUrl']);

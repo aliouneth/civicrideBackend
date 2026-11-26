@@ -9,15 +9,13 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Server-side geocoding using OpenStreetMap Nominatim.
- * Provides fallback for US addresses with city/state parsing.
- * PRIMARY: Parses Wisconsin fire-number addresses (E#### / W#### system)
- * which Nominatim cannot handle correctly.
+ * Server-side address lookup. Mapbox is preferred when configured because it
+ * is reliable and cheap (100k free requests/month); Nominatim remains a free
+ * fallback. Wisconsin fire-number addresses are parsed locally because neither
+ * provider understands the E#### / W#### grid system.
  *
- * Nominatim is a free public service: this machine's connection to it drops
- * intermittently. A dropped connection is NOT evidence that an address is
- * invalid, so it gets a short retry/TTL instead of being cached as "not found"
- * for an hour (which used to make a good address fail for the rest of the day).
+ * A provider outage is not evidence that an address is invalid, so it is
+ * cached briefly instead of being remembered as a permanent no-match.
  */
 class GeocodingService
 {
@@ -49,14 +47,15 @@ class GeocodingService
         'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
     ];
 
-    /** @var array<string, array{status: string, result: array{lat: float, lng: float}|null}> */
+    /**
+     * @var array<string, array{status: string, result: array{lat: float, lng: float}|null, cacheable: bool}>
+     */
     private static array $memo = [];
 
     /**
      * Geocode an address to lat/lng.
-     * For Wisconsin fire-number addresses (E#### or W#### followed by road),
-     * parses the grid coordinates directly since Nominatim fails.
-     * For other addresses, uses Nominatim with structured query.
+     *
+     * @return array{lat: float, lng: float}|null
      */
     public function geocode(string $address): ?array
     {
@@ -67,7 +66,7 @@ class GeocodingService
      * Same lookup, with the reason for a miss so the UI can tell a bad address
      * from a temporarily unreachable lookup service.
      *
-     * @return array{status: string, result: array{lat: float, lng: float}|null}
+     * @return array{status: string, result: array{lat: float, lng: float}|null, cacheable: bool}
      */
     public function geocodeWithStatus(string $address): array
     {
@@ -81,7 +80,7 @@ class GeocodingService
             return self::$memo[$key];
         }
 
-        $cacheKey = 'geocode:'.md5($key);
+        $cacheKey = $this->cacheKey($key);
         if (Cache::has($cacheKey)) {
             $cached = Cache::get($cacheKey);
             $outcome = match (true) {
@@ -101,7 +100,7 @@ class GeocodingService
             'unavailable' => [self::UNAVAILABLE, self::UNAVAILABLE_TTL],
             default => [null, 0],
         };
-        if ($ttl > 0) {
+        if ($outcome['cacheable'] && $ttl > 0) {
             Cache::put($cacheKey, $value, $ttl);
         }
 
@@ -109,21 +108,56 @@ class GeocodingService
     }
 
     /**
-     * @return array{status: string, result: array{lat: float, lng: float}|null}
+     * Address suggestions for the ride form's combobox. Only Mapbox supports
+     * autocomplete; the local Wisconsin parser supplies its own suggestion so
+     * rural grid addresses still appear without a provider request.
+     *
+     * @return list<array{label: string, lat: float, lng: float}>
      */
-    private function outcome(string $status, ?array $result): array
+    public function suggest(string $query): array
     {
-        return ['status' => $status, 'result' => $result];
+        $query = $this->normalizeQuery($query);
+        if (mb_strlen($query) < 3) {
+            return [];
+        }
+
+        $fireNumberResult = $this->parseWisconsinFireNumber($query);
+        if ($fireNumberResult !== null) {
+            return [['label' => $query, 'lat' => $fireNumberResult['lat'], 'lng' => $fireNumberResult['lng']]];
+        }
+
+        if (! $this->mapboxConfigured()) {
+            return [];
+        }
+
+        try {
+            return $this->requestMapbox($this->mapboxParams(true, 5) + ['q' => $query]);
+        } catch (ConnectionException|RequestException $e) {
+            Log::warning('Mapbox autocomplete failed', [
+                'query' => $query,
+                'error' => $e->getMessage(),
+            ]);
+
+            return [];
+        }
     }
 
     /**
-     * @return array{status: string, result: array{lat: float, lng: float}|null}
+     * @return array{status: string, result: array{lat: float, lng: float}|null, cacheable: bool}
+     */
+    private function outcome(string $status, ?array $result, bool $cacheable = true): array
+    {
+        return ['status' => $status, 'result' => $result, 'cacheable' => $cacheable];
+    }
+
+    /**
+     * @return array{status: string, result: array{lat: float, lng: float}|null, cacheable: bool}
      */
     private function geocodeUncached(string $address): array
     {
-        // Try Wisconsin fire-number parser first (most reliable for WI addresses)
+        // Wisconsin grid addresses are parsed locally by both the form and the API.
         $fireNumberResult = $this->parseWisconsinFireNumber($address);
-        if ($fireNumberResult) {
+        if ($fireNumberResult !== null) {
             Log::info('Geocoded via Wisconsin fire number', [
                 'input' => $address,
                 'result' => $fireNumberResult,
@@ -132,8 +166,163 @@ class GeocodingService
             return $this->outcome('ok', $fireNumberResult);
         }
 
-        // Fall back to Nominatim with a free-form query, then structured fields.
+        if ($this->mapboxConfigured()) {
+            $mapboxOutcome = $this->geocodeMapbox($address);
+            if ($mapboxOutcome['status'] === 'ok') {
+                return $mapboxOutcome;
+            }
+
+            $nominatimOutcome = $this->geocodeNominatim($address);
+            if ($nominatimOutcome['status'] === 'ok') {
+                return $nominatimOutcome;
+            }
+
+            // A healthy provider's no-match is a real miss; only report an
+            // outage when every provider failed to answer.
+            if ($mapboxOutcome['status'] === 'missing' || $nominatimOutcome['status'] === 'missing') {
+                return $this->outcome('missing', null);
+            }
+
+            return $this->outcome('unavailable', null);
+        }
+
         return $this->geocodeNominatim($address);
+    }
+
+    private function mapboxConfigured(): bool
+    {
+        return config('geocoding.provider') === 'mapbox'
+            && is_string(config('geocoding.mapbox.access_token'))
+            && config('geocoding.mapbox.access_token') !== '';
+    }
+
+    /**
+     * Keep provider caches separate so an old Nominatim failure cannot hide a
+     * newly configured Mapbox provider (or vice versa).
+     */
+    private function cacheKey(string $key): string
+    {
+        return 'geocode:'.($this->mapboxConfigured() ? 'mapbox' : 'nominatim').':'.md5($key);
+    }
+
+    /**
+     * @return array{status: string, result: array{lat: float, lng: float}|null, cacheable: bool}
+     */
+    private function geocodeMapbox(string $address): array
+    {
+        try {
+            $suggestions = $this->requestMapbox(
+                $this->mapboxParams(false, 1) + ['q' => $this->normalizeQuery($address)]
+            );
+        } catch (ConnectionException|RequestException $e) {
+            Log::warning('Mapbox geocoding failed', [
+                'address' => $address,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $this->outcome('unavailable', null);
+        }
+
+        if ($suggestions === []) {
+            return $this->outcome('missing', null);
+        }
+
+        $result = ['lat' => $suggestions[0]['lat'], 'lng' => $suggestions[0]['lng']];
+        Log::info('Geocoded via Mapbox', [
+            'input' => $address,
+            'result' => $result,
+        ]);
+
+        // Mapbox forbids caching temporary results. Permanent results require
+        // billing, so only then may the normal 30-day cache apply.
+        return $this->outcome('ok', $result, (bool) config('geocoding.mapbox.permanent', false));
+    }
+
+    /**
+     * @param  array<string, mixed>  $params
+     * @return list<array{label: string, lat: float, lng: float}>
+     */
+    private function requestMapbox(array $params): array
+    {
+        $response = Http::timeout(6)
+            ->withHeaders(['Accept' => 'application/json'])
+            ->get((string) config('geocoding.mapbox.endpoint'), $params);
+
+        // Rate limits, server errors, and bad credentials are all recoverable
+        // by falling back to Nominatim rather than blaming the address.
+        if ($response->status() === 429 || $response->clientError() || $response->serverError()) {
+            $response->throw();
+        }
+        if (! $response->ok()) {
+            return [];
+        }
+
+        $features = data_get($response->json(), 'features', []);
+        if (! is_array($features)) {
+            return [];
+        }
+
+        $suggestions = [];
+        foreach ($features as $feature) {
+            if (! is_array($feature)) {
+                continue;
+            }
+
+            $lat = (float) (data_get($feature, 'properties.coordinates.latitude')
+                ?? data_get($feature, 'geometry.coordinates.1', 0));
+            $lng = (float) (data_get($feature, 'properties.coordinates.longitude')
+                ?? data_get($feature, 'geometry.coordinates.0', 0));
+            if ($lat === 0.0 && $lng === 0.0) {
+                continue;
+            }
+
+            $name = trim((string) data_get($feature, 'properties.name', ''));
+            $context = trim((string) data_get($feature, 'properties.place_formatted', ''));
+            $fullAddress = trim((string) data_get($feature, 'properties.full_address', ''));
+            $label = $fullAddress !== ''
+                ? $fullAddress
+                : trim($name.($context !== '' ? ', '.$context : ''));
+            if ($label === '') {
+                continue;
+            }
+
+            $suggestions[] = ['label' => $label, 'lat' => $lat, 'lng' => $lng];
+        }
+
+        return $suggestions;
+    }
+
+    /**
+     * @return array<string, string|int>
+     */
+    private function mapboxParams(bool $autocomplete, int $limit): array
+    {
+        $params = [
+            'access_token' => (string) config('geocoding.mapbox.access_token'),
+            'autocomplete' => $autocomplete ? 'true' : 'false',
+            'country' => config('geocoding.mapbox.country'),
+            'language' => config('geocoding.mapbox.language'),
+            'types' => config('geocoding.mapbox.types'),
+            'limit' => $limit,
+            'permanent' => config('geocoding.mapbox.permanent', false) ? 'true' : 'false',
+            'proximity' => config('geocoding.mapbox.proximity'),
+        ];
+
+        return array_filter($params, fn (mixed $value): bool => $value !== null && $value !== '');
+    }
+
+    /**
+     * Mapbox limits q to 256 characters / 20 words and forbids semicolons.
+     */
+    private function normalizeQuery(string $query): string
+    {
+        $query = str_replace(';', ' ', trim($query));
+        $words = preg_split('/\s+/', $query) ?: [];
+        if (count($words) > 20) {
+            $query = implode(' ', array_slice($words, 0, 20));
+        }
+
+        return mb_substr($query, 0, 256);
     }
 
     /**
@@ -143,6 +332,8 @@ class GeocodingService
      *
      * Rough conversion: ~1000 units ≈ 1 mile at Wisconsin's latitude.
      * Origin is approximately near 42.5°N, 90.7°W (around Dubuque, IA/WI border).
+     *
+     * @return array{lat: float, lng: float}|null
      */
     private function parseWisconsinFireNumber(string $address): ?array
     {
@@ -155,7 +346,6 @@ class GeocodingService
         $ew = strtoupper($m[1]);    // E or W
         $coord = (int) $m[2];       // coordinate value (e.g., 4104, 1919)
         $ns = strtoupper($m[3]);    // N, S, or empty
-        $road = trim($m[4]);        // road name
 
         // Wisconsin grid conversion (approximate)
         // Base point: ~42.5°N, -90.7°W
@@ -164,7 +354,6 @@ class GeocodingService
         $baseLng = -90.7;
         $unitsPerDegree = 69.0; // miles per degree of longitude at this latitude
 
-        // Calculate approximate coordinates
         // E/W affects longitude, N/S affects latitude
         $lngDelta = ($ew === 'E' ? 1 : -1) * ($coord / 1000) / $unitsPerDegree;
         $latDelta = ($ns === 'N' ? 1 : ($ns === 'S' ? -1 : 0)) * 0.02; // approximate north/south
@@ -194,7 +383,7 @@ class GeocodingService
      * then the parsed street/city/state/postal fields as a fallback.
      *
      * @param  array{street: string|null, city: string|null, state: string|null, postalcode: string|null}  $structured
-     * @return array{status: string, result: array{lat: float, lng: float}|null}
+     * @return array{status: string, result: array{lat: float, lng: float}|null, cacheable: bool}
      */
     private function geocodeNominatim(string $address): array
     {

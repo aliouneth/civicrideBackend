@@ -2,8 +2,11 @@
 
 namespace App\Services;
 
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Server-side geocoding using OpenStreetMap Nominatim.
@@ -11,33 +14,66 @@ use Illuminate\Support\Facades\Http;
  * PRIMARY: Parses Wisconsin fire-number addresses (E#### / W#### system)
  * which Nominatim cannot handle correctly.
  *
- * Results are memoized per request and in the Laravel cache: addresses are
- * stable, and an unreachable/rate-limited Nominatim must not stall ride
- * serialization (the distance accessor runs for every ride on the board).
+ * Nominatim is a free public service: this machine's connection to it drops
+ * intermittently. A dropped connection is NOT evidence that an address is
+ * invalid, so it gets a short retry/TTL instead of being cached as "not found"
+ * for an hour (which used to make a good address fail for the rest of the day).
  */
 class GeocodingService
 {
     private const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 
-    /** Successful geocodes are stable; failures are retried after a short TTL. */
+    /** Successful geocodes are stable. */
     private const SUCCESS_TTL = 86400 * 30;
 
-    /** The local CA bundle cannot verify Nominatim, so failures are deterministic —
-     *  retrying sooner than this just re-pays the stall on every other request. */
-    private const FAILURE_TTL = 3600;
+    /** A genuine "no match" is stable enough to cache briefly. */
+    private const NO_MATCH_TTL = 3600;
 
-    /** @var array<string, array{lat: float, lng: float}|null> */
+    /** A provider outage must be retried soon, not remembered as a bad address. */
+    private const UNAVAILABLE_TTL = 60;
+
+    private const ATTEMPTS = 2;
+
+    /** Nominatim's usage policy allows one request per second. */
+    private const RETRY_DELAY_MS = 1200;
+
+    /** Cache sentinel distinguishing outage from a genuine no-match (false). */
+    private const UNAVAILABLE = '__geocode_unavailable__';
+
+    /** @var list<string> */
+    private const US_STATES = [
+        'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL',
+        'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME',
+        'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH',
+        'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI',
+        'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+    ];
+
+    /** @var array<string, array{status: string, result: array{lat: float, lng: float}|null}> */
     private static array $memo = [];
 
     /**
      * Geocode an address to lat/lng.
-     * For Wisconsin fire-number addresses (E#### N Road / W#### S Road),
+     * For Wisconsin fire-number addresses (E#### or W#### followed by road),
      * parses the grid coordinates directly since Nominatim fails.
      * For other addresses, uses Nominatim with structured query.
      */
     public function geocode(string $address): ?array
     {
-        if (! $address) return null;
+        return $this->geocodeWithStatus($address)['result'];
+    }
+
+    /**
+     * Same lookup, with the reason for a miss so the UI can tell a bad address
+     * from a temporarily unreachable lookup service.
+     *
+     * @return array{status: string, result: array{lat: float, lng: float}|null}
+     */
+    public function geocodeWithStatus(string $address): array
+    {
+        if (! $address) {
+            return $this->outcome('empty', null);
+        }
 
         $key = mb_strtolower(trim($address));
 
@@ -48,32 +84,55 @@ class GeocodingService
         $cacheKey = 'geocode:'.md5($key);
         if (Cache::has($cacheKey)) {
             $cached = Cache::get($cacheKey);
-            return self::$memo[$key] = ($cached === false) ? null : $cached;
+            $outcome = match (true) {
+                $cached === self::UNAVAILABLE => $this->outcome('unavailable', null),
+                $cached === false => $this->outcome('missing', null),
+                default => $this->outcome('ok', $cached),
+            };
+
+            return self::$memo[$key] = $outcome;
         }
 
-        $result = $this->geocodeUncached($address);
+        $outcome = $this->geocodeUncached($address);
 
-        Cache::put($cacheKey, $result ?? false, $result ? self::SUCCESS_TTL : self::FAILURE_TTL);
+        [$value, $ttl] = match ($outcome['status']) {
+            'ok' => [$outcome['result'], self::SUCCESS_TTL],
+            'missing' => [false, self::NO_MATCH_TTL],
+            'unavailable' => [self::UNAVAILABLE, self::UNAVAILABLE_TTL],
+            default => [null, 0],
+        };
+        if ($ttl > 0) {
+            Cache::put($cacheKey, $value, $ttl);
+        }
 
-        return self::$memo[$key] = $result;
+        return self::$memo[$key] = $outcome;
     }
 
     /**
-     * Geocode without consulting any cache.
+     * @return array{status: string, result: array{lat: float, lng: float}|null}
      */
-    private function geocodeUncached(string $address): ?array
+    private function outcome(string $status, ?array $result): array
+    {
+        return ['status' => $status, 'result' => $result];
+    }
+
+    /**
+     * @return array{status: string, result: array{lat: float, lng: float}|null}
+     */
+    private function geocodeUncached(string $address): array
     {
         // Try Wisconsin fire-number parser first (most reliable for WI addresses)
         $fireNumberResult = $this->parseWisconsinFireNumber($address);
         if ($fireNumberResult) {
-            \Log::info('Geocoded via Wisconsin fire number', [
+            Log::info('Geocoded via Wisconsin fire number', [
                 'input' => $address,
                 'result' => $fireNumberResult,
             ]);
-            return $fireNumberResult;
+
+            return $this->outcome('ok', $fireNumberResult);
         }
 
-        // Fall back to Nominatim with structured query
+        // Fall back to Nominatim with a free-form query, then structured fields.
         return $this->geocodeNominatim($address);
     }
 
@@ -81,7 +140,7 @@ class GeocodingService
      * Parse Wisconsin fire-number addresses (E#### or W#### followed by road).
      * Wisconsin uses a coordinate-based addressing system for rural areas.
      * E = easting, W = westing (from a base origin).
-     * 
+     *
      * Rough conversion: ~1000 units ≈ 1 mile at Wisconsin's latitude.
      * Origin is approximately near 42.5°N, 90.7°W (around Dubuque, IA/WI border).
      */
@@ -118,11 +177,12 @@ class GeocodingService
         $minLng = -93.5; $maxLng = -86.5;
 
         if ($lat < $minLat || $lat > $maxLat || $lng < $minLng || $lng > $maxLng) {
-            \Log::warning('Wisconsin fire number outside expected bounds', [
+            Log::warning('Wisconsin fire number outside expected bounds', [
                 'input' => $address,
                 'computed' => ['lat' => $lat, 'lng' => $lng],
-                'bounds' => ["min_lat" => $minLat, "max_lat" => $maxLat, "min_lng" => $minLng, "max_lng" => $maxLng],
+                'bounds' => ['min_lat' => $minLat, 'max_lat' => $maxLat, 'min_lng' => $minLng, 'max_lng' => $maxLng],
             ]);
+
             return null;
         }
 
@@ -130,69 +190,123 @@ class GeocodingService
     }
 
     /**
-     * Geocode using Nominatim with structured query parameters.
-     * Extracts city/state from address for better results.
+     * Free-form query first (Nominatim handles complete US addresses well),
+     * then the parsed street/city/state/postal fields as a fallback.
+     *
+     * @param  array{street: string|null, city: string|null, state: string|null, postalcode: string|null}  $structured
+     * @return array{status: string, result: array{lat: float, lng: float}|null}
      */
-    private function geocodeNominatim(string $address): ?array
+    private function geocodeNominatim(string $address): array
     {
-        // Try to extract city/state for structured query
         $structured = $this->parseAddress($address);
 
-        try {
-            $params = [
-                'format' => 'json',
-                'limit' => 1,
-                'addressdetails' => 1,
-                'countrycodes' => 'us',
-            ];
+        for ($attempt = 1; $attempt <= self::ATTEMPTS; $attempt++) {
+            try {
+                $result = $this->queryNominatim($address, $structured);
+                if ($result !== null) {
+                    Log::info('Geocoded via Nominatim', [
+                        'input' => $address,
+                        'structured' => $structured,
+                        'result' => $result,
+                    ]);
 
-            if ($structured['street']) {
-                $params['street'] = $structured['street'];
-            }
-            if ($structured['city']) {
-                $params['city'] = $structured['city'];
-            }
-            if ($structured['state']) {
-                $params['state'] = $structured['state'];
-            }
-            if ($structured['postalcode']) {
-                $params['postalcode'] = $structured['postalcode'];
-            } else {
-                $params['q'] = $address;
-            }
+                    return $this->outcome('ok', $result);
+                }
 
-            $response = Http::timeout(5)
-                ->withHeaders([
-                    'User-Agent' => 'CivicRide/1.0',
-                    'Accept' => 'application/json',
-                ])
-                ->get(self::NOMINATIM_URL, $params);
-
-            if (! $response->ok()) return null;
-
-            $data = $response->json();
-            if (is_array($data) && count($data) > 0) {
-                $result = $data[0];
-                $lat = (float) $result['lat'];
-                $lng = (float) $result['lon'];
-
-                \Log::info('Geocoded via Nominatim', [
-                    'input' => $address,
-                    'structured' => $structured,
-                    'result' => ['lat' => $lat, 'lng' => $lng, 'display_name' => $result['display_name'] ?? null],
+                return $this->outcome('missing', null);
+            } catch (ConnectionException|RequestException $e) {
+                Log::warning('Nominatim geocoding failed', [
+                    'address' => $address,
+                    'attempt' => $attempt,
+                    'error' => $e->getMessage(),
                 ]);
-
-                return ['lat' => $lat, 'lng' => $lng];
             }
-        } catch (\Throwable $e) {
-            \Log::warning('Nominatim geocoding failed', ['address' => $address, 'error' => $e->getMessage()]);
+
+            if ($attempt < self::ATTEMPTS) {
+                usleep(max(0, (int) config('geocoding.retry_delay_ms', self::RETRY_DELAY_MS)) * 1000);
+            }
         }
 
-        return null;
+        return $this->outcome('unavailable', null);
+    }
+
+    /**
+     * @param  array{street: string|null, city: string|null, state: string|null, postalcode: string|null}  $structured
+     */
+    private function queryNominatim(string $address, array $structured): ?array
+    {
+        $base = [
+            'format' => 'json',
+            'limit' => 1,
+            'addressdetails' => 1,
+            'countrycodes' => 'us',
+        ];
+
+        $result = $this->requestNominatim($base + ['q' => $address]);
+        if ($result !== null) {
+            return $result;
+        }
+
+        $fallback = $base;
+        foreach (['street', 'city', 'state', 'postalcode'] as $field) {
+            if ($structured[$field]) {
+                $fallback[$field] = $structured[$field];
+            }
+        }
+        if (count($fallback) === count($base)) {
+            return null;
+        }
+
+        return $this->requestNominatim($fallback);
+    }
+
+    /**
+     * @param  array<string, mixed>  $params
+     * @return array{lat: float, lng: float}|null
+     */
+    private function requestNominatim(array $params): ?array
+    {
+        $response = Http::timeout(6)
+            ->withHeaders([
+                'User-Agent' => 'CivicRide/1.0 ('.config('app.url').')',
+                'Accept' => 'application/json',
+            ])
+            ->get(self::NOMINATIM_URL, $params);
+
+        // Rate limiting / server errors are transient — throw so the caller
+        // retries instead of recording the address as unfindable.
+        if ($response->status() === 429 || $response->serverError()) {
+            $response->throw();
+        }
+        if (! $response->ok()) {
+            Log::warning('Nominatim returned an unexpected status', [
+                'status' => $response->status(),
+                'params' => $params,
+            ]);
+
+            return null;
+        }
+
+        $data = $response->json();
+        if (! is_array($data) || count($data) === 0) {
+            return null;
+        }
+
+        $first = $data[0];
+
+        return [
+            'lat' => (float) ($first['lat'] ?? 0),
+            'lng' => (float) ($first['lon'] ?? 0),
+        ];
     }
 
     /**
      * Parse address into street, city, state, postalcode components.
+     * The state must be matched BEFORE it is stripped from the string — the
+     * previous implementation removed it first, so `city` was always null and
+     * the street ended up containing the city with a trailing comma.
+     *
+     * @return array{street: string|null, city: string|null, state: string|null, postalcode: string|null}
      */
     private function parseAddress(string $address): array
     {
@@ -208,19 +322,32 @@ class GeocodingService
             $result['postalcode'] = $m[1];
             $address = str_replace($m[0], '', $address);
         }
+        $address = preg_replace('/\s+/', ' ', trim($address)) ?? $address;
 
-        // Extract state abbreviation
-        if (preg_match('/\b([A-Z]{2})(?=\s|$)/', $address, $m)) {
-            $result['state'] = $m[1];
-            $address = str_replace($m[0], '', $address);
+        // Extract a real US state abbreviation (case-insensitive, with or
+        // without a trailing comma), remembering where it appeared.
+        if (preg_match('/\b([A-Za-z]{2})\b/i', $address, $m, PREG_OFFSET_CAPTURE)
+            && in_array(strtoupper($m[1][0]), self::US_STATES, true)) {
+            $result['state'] = strtoupper($m[1][0]);
+            $beforeState = substr($address, 0, $m[0][1]);
+            $address = trim(substr($address, $m[0][1] + strlen($m[0][0])));
+
+            $parts = array_values(array_filter(
+                array_map('trim', explode(',', $beforeState)),
+                fn (string $part): bool => $part !== '',
+            ));
+            if (count($parts) >= 2) {
+                $result['city'] = array_pop($parts);
+                $result['street'] = implode(', ', $parts);
+            } elseif (count($parts) === 1) {
+                $result['city'] = $parts[0];
+            }
         }
 
-        // Extract city (text before state)
-        if ($result['state'] && preg_match('/(.+?)\s+' . $result['state'] . '$/i', $address, $m)) {
-            $result['city'] = trim($m[1]);
+        if ($result['street'] === null) {
+            $street = trim($address, " \t\n\r\0\x0B,");
+            $result['street'] = $street !== '' ? $street : null;
         }
-
-        $result['street'] = trim($address);
 
         return $result;
     }

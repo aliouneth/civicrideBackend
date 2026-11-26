@@ -90,8 +90,12 @@ Route::prefix('v1')->middleware(['tenant'])->group(function () {
             if ($address === '') {
                 return response()->json(null);
             }
-            $result = app(\App\Services\GeocodingService::class)->geocode($address);
-            return response()->json($result);
+            $result = app(\App\Services\GeocodingService::class)->geocodeWithStatus($address);
+            if ($result['status'] === 'unavailable') {
+                return response()->json(['message' => 'Address lookup is temporarily unavailable.'], 503);
+            }
+
+            return response()->json($result['result']);
         });
         Route::get('drivers/me/documents/{documentId}', [DriverController::class, 'downloadOwnDocument']);
         Route::post('drivers/{driverProfile}/documents', [DriverController::class, 'uploadDocument']);

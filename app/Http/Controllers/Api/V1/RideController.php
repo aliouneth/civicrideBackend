@@ -236,7 +236,7 @@ class RideController extends Controller
         return CarbonImmutable::parse($current)->eq(CarbonImmutable::parse($incoming));
     }
 
-    /** Execute a lifecycle step (start ride, pickup, drop-off, cancel). */
+    /** Execute a lifecycle step (start, pickup, transporting, arrival, drop-off, cancel). */
     public function transition(TransitionRideRequest $request, Ride $ride)
     {
         $data = $request->validated();

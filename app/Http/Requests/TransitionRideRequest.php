@@ -16,7 +16,7 @@ class TransitionRideRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'to_code' => ['required', 'string', 'in:assigned,en_route,at_pickup,transporting,completed,cancelled,pending,unassigned'],
+            'to_code' => ['required', 'string', 'in:assigned,en_route,at_pickup,transporting,at_destination,completed,cancelled,pending,unassigned'],
             'note' => ['nullable', 'string', 'max:2000'],
             'incident' => ['nullable', 'string', 'max:2000'],
             'reason' => [

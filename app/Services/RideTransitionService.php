@@ -23,7 +23,8 @@ class RideTransitionService
         'assigned' => ['en_route', 'pending', 'cancelled', 'unassigned'],
         'en_route' => ['at_pickup', 'assigned', 'cancelled'],
         'at_pickup' => ['transporting', 'en_route', 'cancelled'],
-        'transporting' => ['completed', 'at_pickup'],
+        'transporting' => ['at_destination', 'at_pickup'],
+        'at_destination' => ['completed', 'transporting'],
         'completed' => [],
         'cancelled' => [],
     ];

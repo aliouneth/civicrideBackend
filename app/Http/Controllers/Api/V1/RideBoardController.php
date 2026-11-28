@@ -59,7 +59,7 @@ class RideBoardController extends Controller
         $startDate = $data['start_date'] ?? null;
         $endDate = $data['end_date'] ?? null;
 
-        $openIds = RideStatus::whereIn('code', ['pending', 'assigned', 'en_route', 'at_pickup', 'transporting'])->pluck('id');
+        $openIds = RideStatus::whereIn('code', ['pending', 'assigned', 'en_route', 'at_pickup', 'transporting', 'at_destination'])->pluck('id');
 
         $statusIds = $includeCompleted
             ? RideStatus::pluck('id')

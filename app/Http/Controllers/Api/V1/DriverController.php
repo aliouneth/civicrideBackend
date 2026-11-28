@@ -15,8 +15,8 @@ use Illuminate\Support\Facades\DB;
 
 class DriverController extends Controller
 {
-    /** Rides a driver still has to work: assigned, on the way, or on board. */
-    private const OPEN_DRIVER_STATUSES = ['assigned', 'en_route', 'at_pickup', 'transporting'];
+    /** Rides a driver still has to work: assigned, on the way, on board, or arrived. */
+    private const OPEN_DRIVER_STATUSES = ['assigned', 'en_route', 'at_pickup', 'transporting', 'at_destination'];
 
     public function __construct(private RideAssignmentService $assignments) {}
 
@@ -55,7 +55,7 @@ class DriverController extends Controller
             ->whereHas('assignments', fn ($query) => $query
                 ->where('driver_profile_id', $profile->id)
                 ->whereNull('unassigned_at'))
-            ->whereHas('status', fn ($query) => $query->whereIn('code', ['en_route', 'at_pickup', 'transporting']))
+            ->whereHas('status', fn ($query) => $query->whereIn('code', ['en_route', 'at_pickup', 'transporting', 'at_destination']))
             ->firstOrFail();
 
         DB::table('ride_location_points')->insert([
@@ -105,7 +105,7 @@ class DriverController extends Controller
             ->join('users', 'users.id', '=', 'drivers.user_id')
             ->join('rides', 'rides.id', '=', 'locations.ride_id')
             ->join('ride_statuses as statuses', 'statuses.id', '=', 'rides.status_id')
-            ->whereIn('statuses.code', ['en_route', 'at_pickup', 'transporting'])
+            ->whereIn('statuses.code', ['en_route', 'at_pickup', 'transporting', 'at_destination'])
             ->where('locations.recorded_at', '>=', now()->subMinutes(10))
             ->select([
                 'drivers.id as driver_id', 'users.name as driver_name', 'rides.id as ride_id',
@@ -438,7 +438,7 @@ class DriverController extends Controller
                 })->whereHas('status', fn ($s) => $s->whereIn('code', self::OPEN_DRIVER_STATUSES))
                     // A ride still under way belongs on the job list even when it
                     // was picked up before midnight.
-                    ->orWhereHas('status', fn ($s) => $s->whereIn('code', ['en_route', 'at_pickup', 'transporting']));
+                    ->orWhereHas('status', fn ($s) => $s->whereIn('code', ['en_route', 'at_pickup', 'transporting', 'at_destination']));
             }))
             ->when($scope === 'later', fn ($q) => $q
                 ->where('scheduled_pickup_at', '>=', $dayEnd)
